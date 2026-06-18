@@ -135,6 +135,7 @@ export function formatMessages(messages: MessageInRow[]): string {
   const taskMessages = messages.filter((m) => m.kind === 'task');
   const webhookMessages = messages.filter((m) => m.kind === 'webhook');
   const systemMessages = messages.filter((m) => m.kind === 'system');
+  const maildirMessages = messages.filter((m) => m.kind === 'maildir-wake');
 
   const parts: string[] = [];
 
@@ -149,6 +150,9 @@ export function formatMessages(messages: MessageInRow[]): string {
   }
   if (systemMessages.length > 0) {
     parts.push(...systemMessages.map(formatSystemMessage));
+  }
+  if (maildirMessages.length > 0) {
+    parts.push(...maildirMessages.map(formatMaildirWake));
   }
 
   return header + parts.join('\n\n');
@@ -213,6 +217,12 @@ function formatWebhookMessage(msg: MessageInRow): string {
   const event = content.event || 'unknown';
   const from = originAttr(msg);
   return `<webhook${from} source="${escapeXml(source)}" event="${escapeXml(event)}">${JSON.stringify(content.payload || content, null, 2)}</webhook>`;
+}
+
+function formatMaildirWake(msg: MessageInRow): string {
+  const content = parseContent(msg.content);
+  const time = formatLocalTime(msg.timestamp, TIMEZONE);
+  return `<maildir-wake time="${escapeXml(time)}" inbox="${escapeXml(content.inboxNew || '/workspace/mail/inbox/new')}">${content.text || 'You have new messages in your inbox.'}</maildir-wake>`;
 }
 
 function formatSystemMessage(msg: MessageInRow): string {

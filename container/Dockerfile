@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # NanoClaw Agent Container
 # Runs Claude Agent SDK in isolated Linux VM with browser automation.
 #

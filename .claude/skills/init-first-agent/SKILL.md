@@ -86,12 +86,42 @@ Add `--provider <name>` when the user picked a non-default provider (there is no
 
 The script:
 1. Upserts the `users` row and grants `owner` role if no owner exists.
-2. Creates the `agent_groups` row and calls `initGroupFilesystem` at `groups/dm-with-<name>/`.
+2. Creates the `agent_groups` row and calls `initGroupFilesystem` at `groups/dm-with-<name>/`. This automatically scaffolds the Maildir inbox (`mail/inbox/{tmp,new,cur}`, `mail/archive/`, `mail/junk/`) and `scratch/` directory.
 3. Reuses or creates the DM `messaging_groups` row.
 4. Wires them via `messaging_group_agents` (which auto-creates the companion `agent_destinations` row).
 5. Hands the welcome message to the running service via its CLI socket (`data/cli.sock`), targeting the DM messaging group. The service routes it into the DM session, which wakes the container synchronously. If the socket isn't reachable (service down), falls back to a direct `inbound.db` write that the next host sweep picks up.
 
 Show the script's output to the user.
+
+## 4b. Scaffold the outbound Maildir
+
+After the init script succeeds, create the outbound Maildir and `.binding` file for the DM channel.
+
+Determine the address path:
+- **Direct-addressable channels** (telegram, whatsapp, imessage, matrix, resend): `direct/<USER_HANDLE>`
+- **Resolution-required channels** (discord, slack, teams, webex, gchat): `direct/<USER_HANDLE>`
+
+```typescript
+import { scaffoldOutboxMaildir } from '../group-init.js';
+scaffoldOutboxMaildir('dm-with-<name>', CHANNEL, `direct/${USER_HANDLE}`);
+```
+
+Or manually:
+
+```bash
+mkdir -p groups/dm-with-<name>/mail/out/${CHANNEL}/direct/${USER_HANDLE}/{tmp,new,cur}
+```
+
+Then write the `.binding` file:
+
+```bash
+cat > groups/dm-with-<name>/mail/out/${CHANNEL}/direct/${USER_HANDLE}/.binding << EOF
+Provider: ${CHANNEL}
+Chat-ID: ${PLATFORM_ID}
+Chat-Type: direct
+Display-Name: ${DISPLAY_NAME}
+EOF
+```
 
 ## 5. Verify
 

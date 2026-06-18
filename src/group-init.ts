@@ -4,6 +4,7 @@ import path from 'path';
 import { DATA_DIR, GROUPS_DIR } from './config.js';
 import { ensureContainerConfig } from './db/container-configs.js';
 import { log } from './log.js';
+import { watchMaildir } from './maildir-watcher.js';
 import { providerProvidesAgentSurfaces } from './providers/provider-container-registry.js';
 import type { AgentGroup } from './types.js';
 
@@ -105,6 +106,26 @@ export function initGroupFilesystem(
     initialized.push('.seed.md consumed');
   }
 
+  // Maildir scaffold — inbox, archive, junk, scratch.
+  const mailDir = path.join(groupDir, 'mail');
+  for (const box of ['inbox', 'archive', 'junk']) {
+    for (const sub of ['tmp', 'new', 'cur']) {
+      const dir = path.join(mailDir, box, sub);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+        initialized.push(`mail/${box}/${sub}`);
+      }
+    }
+  }
+  const scratchDir = path.join(groupDir, 'scratch');
+  if (!fs.existsSync(scratchDir)) {
+    fs.mkdirSync(scratchDir, { recursive: true });
+    initialized.push('scratch/');
+  }
+
+  // Start watching the new inbox for Maildir messages.
+  watchMaildir(group.folder);
+
   // Ensure container_configs row exists in the DB. Idempotent — no-op if
   // the row already exists (e.g. created by backfill or group creation).
   ensureContainerConfig(group.id);
@@ -143,6 +164,21 @@ export function initGroupFilesystem(
       steps: initialized,
     });
   }
+}
+
+/**
+ * Create an outbound Maildir for a channel destination. Called by channel
+ * skills when wiring a channel to an agent group.
+ *
+ * Example: scaffoldOutboxMaildir('lumen', 'telegram', 'direct/dmj')
+ * creates groups/lumen/mail/out/telegram/direct/dmj/{tmp,new,cur}/
+ */
+export function scaffoldOutboxMaildir(folder: string, adapter: string, addressPath: string): void {
+  const outDir = path.join(GROUPS_DIR, folder, 'mail', 'out', adapter, addressPath);
+  for (const sub of ['tmp', 'new', 'cur']) {
+    fs.mkdirSync(path.join(outDir, sub), { recursive: true });
+  }
+  log.info('Outbox Maildir created', { folder, adapter, addressPath });
 }
 
 const PRE_COMPACT_COMMAND = 'bun /app/src/compact-instructions.ts';

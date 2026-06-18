@@ -43,6 +43,8 @@ export interface ContainerConfig {
   maxMessagesPerPrompt?: number;
   model?: string;
   effort?: string;
+  env?: Record<string, string>;
+  blockedHosts?: string[];
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */

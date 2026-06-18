@@ -65,11 +65,45 @@ pnpm exec tsx setup/index.ts --step register -- \
   --assistant-name "<name>"
 ```
 
-The `register` step creates the agent group (reusing it if the folder already exists), the messaging group, and the wiring row. `createMessagingGroupAgent` auto-creates the companion `agent_destinations` row so the agent can address the channel by name.
+The `register` step creates the agent group (reusing it if the folder already exists), the messaging group, and the wiring row. `createMessagingGroupAgent` auto-creates the companion `agent_destinations` row so the agent can address the channel by name. If the agent group is new, `initGroupFilesystem` automatically scaffolds the Maildir inbox and scratch directory.
 
 When creating a NEW agent group on a non-default provider, append `--provider <name>` (e.g. `--provider codex`) — there is no install-wide default; existing groups switch via `ncl groups config update --provider` instead.
 
 For separate agents, also ask for a folder name and optionally a different assistant name.
+
+### Scaffold Outbound Maildir
+
+After registering, scaffold the outbound Maildir for the channel:
+
+```typescript
+import { scaffoldOutboxMaildir } from '../group-init.js';
+scaffoldOutboxMaildir(folder, channelType, addressPath);
+```
+
+Or manually:
+
+```bash
+mkdir -p groups/<folder>/mail/out/<channel>/<address-path>/{tmp,new,cur}
+```
+
+The address path is channel-defined and human-readable:
+- Telegram DM: `direct/<handle>`
+- Telegram group: `group/<group-name>`
+- Discord: `<guild-name>/<channel-name>`
+- Slack: `<workspace>/<channel-name>`
+
+Then write the `.binding` file (RFC822-style headers, no secrets):
+
+```bash
+cat > groups/<folder>/mail/out/<channel>/<address-path>/.binding << EOF
+Provider: <channel>
+Chat-ID: <platform_id>
+Chat-Type: <direct or group>
+Display-Name: <name>
+EOF
+```
+
+The `.binding` file is adaptor-specific. Include whatever non-secret routing metadata the egress adaptor will need (e.g. guild ID + channel ID for Discord, chat ID for Telegram).
 
 ## Add Channel Group
 

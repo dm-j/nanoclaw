@@ -99,6 +99,56 @@ TELEGRAM_BOT_TOKEN=your-bot-token
 
 Sync to container: `mkdir -p data/env && cp .env data/env/env`
 
+## Maildir Setup (post-pairing)
+
+After pairing succeeds (you have `PLATFORM_ID` and the agent group folder), scaffold the outbound Maildir and write the binding file.
+
+### 1. Scaffold the outbox Maildir
+
+Determine the address path from the pairing result:
+
+- **DM**: `direct/<handle>` (e.g. `direct/dmj`)
+- **Group**: `group/<group-name>` (e.g. `group/the-squad`)
+
+Call the scaffold helper from host code:
+
+```typescript
+import { scaffoldOutboxMaildir } from '../group-init.js';
+scaffoldOutboxMaildir(folder, 'telegram', addressPath);
+```
+
+Or create the directories directly:
+
+```bash
+mkdir -p groups/<folder>/mail/out/telegram/<address-path>/{tmp,new,cur}
+```
+
+### 2. Write the `.binding` file
+
+Write an RFC822-style binding file into the outbox Maildir root:
+
+```bash
+cat > groups/<folder>/mail/out/telegram/<address-path>/.binding << 'EOF'
+Provider: telegram
+Chat-ID: <PLATFORM_ID from pairing>
+Chat-Type: <direct or group>
+Display-Name: <user display name or group name>
+EOF
+```
+
+The `.binding` file contains non-secret routing metadata. The agent may read it for context. Secrets (bot token) remain in `.env` / OneCLI vault only.
+
+### 3. Verify
+
+Confirm the Maildir tree exists:
+
+```bash
+ls groups/<folder>/mail/out/telegram/<address-path>/
+# Expected: tmp/ new/ cur/ .binding
+```
+
+The egress adaptor will watch this Maildir's `new/` for outbound messages once the service is running.
+
 ## Next Steps
 
 If you're in the middle of `/setup`, return to the setup flow now.
