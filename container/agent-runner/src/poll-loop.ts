@@ -237,6 +237,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     const processingIds = ids.filter((id) => !commandIds.includes(id) && !skippedSet.has(id));
     // Publish the batch's in_reply_to so MCP tools (send_message, send_file)
     // can stamp it on outbound rows — needed for a2a return-path routing.
+    const isMaildirOnly = keep.every((m) => m.kind === 'maildir-wake');
     setCurrentInReplyTo(routing.inReplyTo);
     try {
       const result = await processQuery(
@@ -247,6 +248,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         config.provider.onExchangeComplete?.bind(config.provider),
         prompt,
         continuation,
+        isMaildirOnly,
       );
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
@@ -331,6 +333,7 @@ export async function processQuery(
   onExchangeComplete: ((exchange: ProviderExchange) => void) | undefined,
   initialPrompt: string,
   initialContinuation: string | undefined,
+  maildirOnly = false,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
@@ -481,7 +484,10 @@ export async function processQuery(
         // (send_message) mid-turn, or the message may not need a response
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
-        if (event.text) {
+        if (event.text && maildirOnly) {
+          log(`[maildir-only] Agent responded (${event.text.length} chars) — delivery handled by agent via outbox Maildir`);
+          archivePrompts.shift();
+        } else if (event.text) {
           const { sent, hasUnwrapped } = dispatchResultText(event.text, routing);
           if (sent === 0 && event.isError === true) {
             // Non-retryable error turn (e.g. a 403 billing_error) with no

@@ -14,7 +14,19 @@ import { createChatSdkBridge, type ReplyContext } from './chat-sdk-bridge.js';
 import { sanitizeTelegramLegacyMarkdown } from './telegram-markdown-sanitize.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import type { ChannelAdapter, ChannelSetup, InboundMessage } from './adapter.js';
+import { registerMaildirAdaptor } from '../maildir-ingress.js';
 import { tryConsume } from './telegram-pairing.js';
+
+registerMaildirAdaptor('telegram', {
+  responseExpected(event, mg) {
+    if (!mg.is_group) return 'yes';
+    return event.message.isMention === true ? 'yes' : 'only if you have something material to add';
+  },
+  threadId(_event, mg) {
+    // Telegram: all DMs from one person = one thread, all messages in a group = one thread.
+    return mg.id;
+  },
+});
 
 /**
  * Retry a one-shot operation that can fail on transient network errors at

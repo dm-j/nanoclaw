@@ -15,6 +15,7 @@ import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
+import { startMaildirEgress, stopMaildirEgress } from './maildir-egress.js';
 import { startMaildirWatcher, stopMaildirWatcher } from './maildir-watcher.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
@@ -169,8 +170,9 @@ async function main(): Promise<void> {
   startHostSweep();
   log.info('Host sweep started');
 
-  // 7. Start Maildir inbox watcher
+  // 7. Start Maildir inbox watcher + outbox egress
   startMaildirWatcher();
+  startMaildirEgress();
 
   // 8. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
@@ -191,6 +193,7 @@ async function shutdown(signal: string): Promise<void> {
   stopDeliveryPolls();
   stopHostSweep();
   stopMaildirWatcher();
+  stopMaildirEgress();
   await stopCliServer();
   try {
     await teardownChannelAdapters();

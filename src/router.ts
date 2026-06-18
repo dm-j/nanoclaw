@@ -33,7 +33,18 @@ import { resolveSession, writeSessionMessage, writeOutboundDirect } from './sess
 import { wakeContainer } from './container-runner.js';
 import { getSession } from './db/sessions.js';
 import type { AgentGroup, MessagingGroup, MessagingGroupAgent } from './types.js';
+import { writeMaildirIngress } from './maildir-ingress.js';
+import { readEnvFile } from './env.js';
 import type { InboundEvent } from './channels/adapter.js';
+
+export type InboundMode = 'traditional' | 'maildir' | 'both';
+
+const INBOUND_MODE: InboundMode = (() => {
+  const raw = readEnvFile(['INBOUND_MODE']).INBOUND_MODE ?? 'both';
+  if (raw === 'traditional' || raw === 'maildir' || raw === 'both') return raw;
+  log.warn('Invalid INBOUND_MODE, defaulting to both', { raw });
+  return 'both';
+})();
 
 function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -458,16 +469,25 @@ async function deliverToAgent(
     }
   }
 
-  writeSessionMessage(session.agent_group_id, session.id, {
-    id: messageIdForAgent(event.message.id, agent.agent_group_id),
-    kind: event.message.kind,
-    timestamp: event.message.timestamp,
-    platformId: deliveryAddr.platformId,
-    channelType: deliveryAddr.channelType,
-    threadId: deliveryAddr.threadId,
-    content: event.message.content,
-    trigger: wake ? 1 : 0,
-  });
+  const useSessionDb = INBOUND_MODE !== 'maildir';
+  const useMaildir = INBOUND_MODE !== 'traditional';
+
+  if (useSessionDb) {
+    writeSessionMessage(session.agent_group_id, session.id, {
+      id: messageIdForAgent(event.message.id, agent.agent_group_id),
+      kind: event.message.kind,
+      timestamp: event.message.timestamp,
+      platformId: deliveryAddr.platformId,
+      channelType: deliveryAddr.channelType,
+      threadId: deliveryAddr.threadId,
+      content: event.message.content,
+      trigger: wake ? 1 : 0,
+    });
+  }
+
+  if (useMaildir) {
+    writeMaildirIngress(agentGroup, mg, event, userId);
+  }
 
   log.info('Message routed', {
     sessionId: session.id,
@@ -478,9 +498,10 @@ async function deliverToAgent(
     wake,
     created,
     agentGroupName: agentGroup.name,
+    inboundMode: INBOUND_MODE,
   });
 
-  if (wake) {
+  if (wake && useSessionDb) {
     // Typing indicator + wake are only for the engaged branch; accumulated
     // messages sit silently until a real trigger fires.
     // Typing fires via the adapter instance that owns this chat's row.

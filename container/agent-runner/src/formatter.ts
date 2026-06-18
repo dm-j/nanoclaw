@@ -222,7 +222,9 @@ function formatWebhookMessage(msg: MessageInRow): string {
 function formatMaildirWake(msg: MessageInRow): string {
   const content = parseContent(msg.content);
   const time = formatLocalTime(msg.timestamp, TIMEZONE);
-  return `<maildir-wake time="${escapeXml(time)}" inbox="${escapeXml(content.inboxNew || '/workspace/mail/inbox/new')}">${content.text || 'You have new messages in your inbox.'}</maildir-wake>`;
+  const inbox = escapeXml(content.inboxNew || '/workspace/mail/inbox/new');
+  const text = content.text || `You have new messages in ${inbox}.`;
+  return `<maildir-wake time="${escapeXml(time)}" inbox="${inbox}">\n${text}\n\nRead each message with bash (cat), respond by writing RFC822 replies to the Response-Maildir specified in each message, then move handled messages to inbox/cur/ with :2,S suffix. See your Maildir instructions for the full protocol.\n</maildir-wake>`;
 }
 
 function formatSystemMessage(msg: MessageInRow): string {
