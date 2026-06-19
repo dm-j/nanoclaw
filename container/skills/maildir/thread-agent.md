@@ -19,6 +19,10 @@ Instead ask:
 
 Raise regret-risk candidates. The main agent decides delivery.
 
+Check `/workspace/scratch/intents.md` for what the user is currently paying attention to — messages matching active intents are more likely worth escalating.
+
+Check `/workspace/scratch/notification-guidance.md` for rules and amendments from the main agent about what to escalate and what to suppress.
+
 Examples that justify `notify_user`:
 - Deadline or expiring opportunity
 - Security, money, health, legal, or work consequence

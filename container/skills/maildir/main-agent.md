@@ -28,6 +28,13 @@ Your inbox is at `/workspace/mail/inbox/`. When you receive a `<maildir-wake>` p
 
 Use bash for all Maildir operations (read, write, move). Write responses atomically: write to `tmp/`, rename to `new/`.
 
+### Shared guidance files
+
+You own these files — thread agents read them but do not modify them:
+
+- `/workspace/scratch/intents.md` — what the user is currently paying attention to. Update this as you learn what matters to the user from conversation. Thread agents check intents when deciding whether to escalate.
+- `/workspace/scratch/notification-guidance.md` — rules for escalation. Add amendments when you see recurring false positives, spam patterns, or escalation patterns that need correction.
+
 ### Ledger
 
 After any user-facing action (notification, delegation), record a compact ledger entry in `/workspace/scratch/ledger.md`:

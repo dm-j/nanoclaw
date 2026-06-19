@@ -139,6 +139,23 @@ export function initGroupFilesystem(
     initialized.push('scratch/');
   }
 
+  // Seed shared guidance files if missing.
+  const seedFiles: Record<string, string> = {
+    'scratch/intents.md':
+      '# Active Intents\n\nThings the user is currently paying attention to. Thread agents use these to calibrate escalation decisions.\n\nThe main agent maintains this file. Thread agents read it but do not modify it.\n',
+    'scratch/notification-guidance.md':
+      '# Notification Guidance\n\nRules for thread agents when deciding whether to escalate. The main agent maintains this file.\n\n## Default rules\n\n- Escalate if the user would regret not knowing within a reasonable time window.\n- Do not escalate obvious spam, phishing, or marketing.\n- Do not escalate routine automated notifications unless they match an active intent.\n\n## Amendments\n',
+    'scratch/ledger.md':
+      '# Action Ledger\n\nCompact log of user-facing actions taken by escalation forks.\n',
+  };
+  for (const [relPath, content] of Object.entries(seedFiles)) {
+    const fullPath = path.join(groupDir, relPath);
+    if (!fs.existsSync(fullPath)) {
+      fs.writeFileSync(fullPath, content);
+      initialized.push(relPath);
+    }
+  }
+
   // Start watching the new inbox for Maildir messages.
   watchMaildir(group.folder);
 
