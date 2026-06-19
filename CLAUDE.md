@@ -17,6 +17,10 @@ If you are a fresh install (you ran `git clone`, not `git pull`) and there are n
 
 Personal Claude assistant. See [README.md](README.md) for philosophy and setup. Architecture lives in `docs/`.
 
+## Platform
+
+All Claude Code instances run on **macOS**. All code, scripts, and CLI tools must be macOS-compatible. Do not use Linux-only flags (e.g. `readlink -f`, `sed -i` without `''`, GNU coreutils extensions) or assume Linux paths.
+
 ## Quick Context
 
 The host is a single Node process that orchestrates per-session agent containers. Platform messages land via channel adapters, route through an entity model (users → messaging groups → agent groups → sessions), get written into the session's inbound DB, and wake a container. The agent-runner inside the container polls the DB, calls Claude, and writes back to the outbound DB. The host polls the outbound DB and delivers through the same adapter.
