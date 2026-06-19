@@ -117,6 +117,13 @@ export function initGroupFilesystem(
       }
     }
   }
+  // Thread-specific inboxes are created on demand by the dispatcher.
+  const threadsDir = path.join(mailDir, 'threads');
+  if (!fs.existsSync(threadsDir)) {
+    fs.mkdirSync(threadsDir, { recursive: true });
+    initialized.push('mail/threads/');
+  }
+
   const scratchDir = path.join(groupDir, 'scratch');
   if (!fs.existsSync(scratchDir)) {
     fs.mkdirSync(scratchDir, { recursive: true });

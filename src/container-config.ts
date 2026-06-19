@@ -82,7 +82,18 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
 
   const config = configFromDb(row, group);
 
+  // Preserve file-only fields (env, blockedHosts) that aren't in the DB yet.
   const p = path.join(GROUPS_DIR, group.folder, 'container.json');
+  if (fs.existsSync(p)) {
+    try {
+      const existing = JSON.parse(fs.readFileSync(p, 'utf-8')) as ContainerConfig;
+      if (existing.env && !config.env) config.env = existing.env;
+      if (existing.blockedHosts && !config.blockedHosts) config.blockedHosts = existing.blockedHosts;
+    } catch {
+      // ignore parse errors
+    }
+  }
+
   const dir = path.dirname(p);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');

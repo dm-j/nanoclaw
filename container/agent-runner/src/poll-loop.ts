@@ -381,14 +381,11 @@ export async function processQuery(
           return;
         }
 
-        // Skip system messages (MCP tool responses).
-        // Thread routing is the router's concern — if a message landed in this
-        // session, the agent should see it. Per-thread sessions already isolate
-        // threads into separate containers; shared sessions intentionally merge
-        // everything. Filtering on thread_id here caused deadlocks when the
-        // initial batch and follow-ups had mismatched thread_ids (e.g. a
-        // host-generated welcome trigger with null thread vs a Discord DM reply).
-        const newMessages = pending.filter((m) => m.kind !== 'system');
+        // Skip system messages (MCP tool responses) and maildir-wake messages.
+        // maildir-wake follow-ups should not be pushed mid-turn — each wake
+        // demands its own turn so the agent processes every message. They stay
+        // pending and get picked up on the next poll loop iteration.
+        const newMessages = pending.filter((m) => m.kind !== 'system' && m.kind !== 'maildir-wake');
         if (newMessages.length === 0) return;
 
         const newIds = newMessages.map((m) => m.id);
@@ -487,6 +484,8 @@ export async function processQuery(
         if (event.text && maildirOnly) {
           log(`[maildir-only] Agent responded (${event.text.length} chars) — delivery handled by agent via outbox Maildir`);
           archivePrompts.shift();
+          // End the query so the outer loop can pick up the next pending wake.
+          query.end();
         } else if (event.text) {
           const { sent, hasUnwrapped } = dispatchResultText(event.text, routing);
           if (sent === 0 && event.isError === true) {

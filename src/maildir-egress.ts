@@ -107,12 +107,32 @@ async function processOutbox(newDir: string, binding: OutboxBinding): Promise<vo
     return;
   }
 
+  let delivered = 0;
   for (const file of files) {
+    // Stagger deliveries to avoid Telegram rate limiting.
+    if (delivered > 0) await new Promise((r) => setTimeout(r, 1000));
+
     const filePath = path.join(newDir, file);
+
+    // Claim the file by reading content then renaming to a processing path.
+    // If another fire already claimed it, skip.
     const body = parseRfc822Body(filePath);
     if (!body) {
-      log.warn('Maildir egress: could not parse message', { filePath });
-      moveToFailed(filePath);
+      if (fs.existsSync(filePath)) {
+        log.warn('Maildir egress: could not parse message', { filePath });
+        moveToFailed(filePath);
+      }
+      continue;
+    }
+
+    // Atomic claim: rename to cur/ with :2, (no flags yet) before delivering.
+    // This prevents duplicate delivery from concurrent debounce fires.
+    const parent = path.dirname(newDir);
+    const claimedPath = path.join(parent, 'cur', `${file}:2,`);
+    try {
+      fs.renameSync(filePath, claimedPath);
+    } catch {
+      // Another fire already claimed this file
       continue;
     }
 
@@ -121,7 +141,13 @@ async function processOutbox(newDir: string, binding: OutboxBinding): Promise<vo
         kind: 'chat',
         content: { text: body },
       });
-      moveToRead(filePath);
+      // Mark delivered: rename to add SP flags
+      try {
+        fs.renameSync(claimedPath, path.join(parent, 'cur', `${file}:2,SP`));
+      } catch {
+        // Already in cur/, flags are cosmetic
+      }
+      delivered++;
       log.debug('Maildir egress delivered', {
         channelType: binding.channelType,
         chatId: binding.chatId,
@@ -129,7 +155,12 @@ async function processOutbox(newDir: string, binding: OutboxBinding): Promise<vo
       });
     } catch (err) {
       log.error('Maildir egress delivery failed', { filePath, err });
-      moveToFailed(filePath);
+      // Mark failed
+      try {
+        fs.renameSync(claimedPath, path.join(parent, 'cur', `${file}:2,F`));
+      } catch {
+        // Best effort
+      }
     }
   }
 }

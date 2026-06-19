@@ -319,10 +319,21 @@ export function buildMounts(
     mounts.push({ hostPath: fragmentsDir, containerPath: '/workspace/agent/.claude-fragments', readonly: true });
   }
 
-  // Maildir tree — RW so the agent can read inbox, write outbox, move to cur.
+  // Maildir mounts. Per-thread sessions get their thread inbox mounted at
+  // /workspace/mail/thread/ and the shared outbox at /workspace/mail/out/.
+  // Agent-shared sessions get the full mail/ tree.
   const mailDir = path.join(groupDir, 'mail');
   if (fs.existsSync(mailDir)) {
-    mounts.push({ hostPath: mailDir, containerPath: '/workspace/mail', readonly: false });
+    const threadDir = session.thread_id ? path.join(mailDir, 'threads', session.thread_id) : null;
+    if (threadDir && fs.existsSync(threadDir)) {
+      mounts.push({ hostPath: threadDir, containerPath: '/workspace/mail/thread', readonly: false });
+      const outDir = path.join(mailDir, 'out');
+      if (fs.existsSync(outDir)) {
+        mounts.push({ hostPath: outDir, containerPath: '/workspace/mail/out', readonly: false });
+      }
+    } else {
+      mounts.push({ hostPath: mailDir, containerPath: '/workspace/mail', readonly: false });
+    }
   }
 
   // Scratch files — RW persistent working context.
