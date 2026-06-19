@@ -39,24 +39,32 @@ function inboxNewPath(folder: string): string {
   return path.join(GROUPS_DIR, folder, 'mail', 'inbox', 'new');
 }
 
+interface ParsedHeaders {
+  threadId: string | null;
+  isMainAgent: boolean;
+}
+
 /**
- * Parse the Thread-ID header from an RFC822 message file.
+ * Parse dispatch-relevant headers from an RFC822 message file.
  * Reads only the header block (up to the first blank line) for efficiency.
  */
-function parseThreadId(filePath: string): string | null {
+function parseDispatchHeaders(filePath: string): ParsedHeaders {
+  const result: ParsedHeaders = { threadId: null, isMainAgent: false };
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
     const blankLine = raw.indexOf('\n\n');
     const headerBlock = blankLine >= 0 ? raw.slice(0, blankLine) : raw;
     for (const line of headerBlock.split('\n')) {
       if (line.startsWith('Thread-ID:')) {
-        return line.slice('Thread-ID:'.length).trim();
+        result.threadId = line.slice('Thread-ID:'.length).trim();
+      } else if (line.startsWith('Is-Main-Agent:')) {
+        result.isMainAgent = line.slice('Is-Main-Agent:'.length).trim().toLowerCase() === 'true';
       }
     }
-    return null;
   } catch {
-    return null;
+    // ignore
   }
+  return result;
 }
 
 /**
@@ -224,18 +232,22 @@ function fire(folder: string, inboxNew: string): void {
   }
   if (fileNames.length === 0) return;
 
-  // Group by Thread-ID
+  // Group by routing: main-agent messages go to agent-shared,
+  // threaded messages go to per-thread sessions, unthreaded to agent-shared.
   const threadGroups = new Map<string, { name: string; fullPath: string }[]>();
+  const mainAgent: { name: string; fullPath: string }[] = [];
   const unthreaded: { name: string; fullPath: string }[] = [];
 
   for (const name of fileNames) {
     const fullPath = path.join(inboxNew, name);
-    const threadId = parseThreadId(fullPath);
-    if (threadId) {
-      let group = threadGroups.get(threadId);
+    const headers = parseDispatchHeaders(fullPath);
+    if (headers.isMainAgent) {
+      mainAgent.push({ name, fullPath });
+    } else if (headers.threadId) {
+      let group = threadGroups.get(headers.threadId);
       if (!group) {
         group = [];
-        threadGroups.set(threadId, group);
+        threadGroups.set(headers.threadId, group);
       }
       group.push({ name, fullPath });
     } else {
@@ -248,9 +260,10 @@ function fire(folder: string, inboxNew: string): void {
     dispatchThread(folder, agentGroup.id, threadId, files, inboxNew);
   }
 
-  // Fallback: unthreaded messages go to agent-shared
-  if (unthreaded.length > 0) {
-    dispatchUnthreaded(folder, agentGroup.id, unthreaded, inboxNew);
+  // Main-agent and unthreaded messages go to agent-shared
+  const agentShared = [...mainAgent, ...unthreaded];
+  if (agentShared.length > 0) {
+    dispatchUnthreaded(folder, agentGroup.id, agentShared, inboxNew);
   }
 }
 

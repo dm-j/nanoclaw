@@ -124,6 +124,15 @@ export function initGroupFilesystem(
     initialized.push('mail/threads/');
   }
 
+  // Escalation Maildir — thread agents write here via notify_user/request_action.
+  for (const sub of ['tmp', 'new', 'cur']) {
+    const dir = path.join(mailDir, 'escalations', sub);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      initialized.push(`mail/escalations/${sub}`);
+    }
+  }
+
   const scratchDir = path.join(groupDir, 'scratch');
   if (!fs.existsSync(scratchDir)) {
     fs.mkdirSync(scratchDir, { recursive: true });

@@ -16,6 +16,7 @@ import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runti
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { startMaildirEgress, stopMaildirEgress } from './maildir-egress.js';
+import { startEscalationWatcher, stopEscalationWatcher } from './maildir-escalation.js';
 import { startMaildirWatcher, stopMaildirWatcher } from './maildir-watcher.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
@@ -173,6 +174,7 @@ async function main(): Promise<void> {
   // 7. Start Maildir inbox watcher + outbox egress
   startMaildirWatcher();
   startMaildirEgress();
+  startEscalationWatcher();
 
   // 8. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
@@ -194,6 +196,7 @@ async function shutdown(signal: string): Promise<void> {
   stopHostSweep();
   stopMaildirWatcher();
   stopMaildirEgress();
+  stopEscalationWatcher();
   await stopCliServer();
   try {
     await teardownChannelAdapters();

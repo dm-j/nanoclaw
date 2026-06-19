@@ -54,6 +54,17 @@ const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 
 /** Active containers tracked by session ID. */
 const activeContainers = new Map<string, { process: ChildProcess; containerName: string }>();
+const closeCallbacks = new Map<string, (() => void)[]>();
+
+/** Register a callback to run when a session's container exits. */
+export function onContainerClose(sessionId: string, cb: () => void): void {
+  let cbs = closeCallbacks.get(sessionId);
+  if (!cbs) {
+    cbs = [];
+    closeCallbacks.set(sessionId, cbs);
+  }
+  cbs.push(cb);
+}
 
 /**
  * In-flight wake promises, keyed by session id. Deduplicates concurrent
@@ -200,6 +211,15 @@ async function spawnContainer(session: Session): Promise<void> {
     } else {
       log.info('Container exited', { sessionId: session.id, code, containerName });
     }
+    const cbs = closeCallbacks.get(session.id);
+    if (cbs) {
+      closeCallbacks.delete(session.id);
+      for (const cb of cbs) {
+        try { cb(); } catch (err) {
+          log.warn('Container close callback threw', { sessionId: session.id, err });
+        }
+      }
+    }
   });
 
   container.on('error', (err) => {
@@ -319,6 +339,25 @@ export function buildMounts(
     mounts.push({ hostPath: fragmentsDir, containerPath: '/workspace/agent/.claude-fragments', readonly: true });
   }
 
+  // Role-specific maildir instructions: thread agents get thread-agent.md,
+  // main agent (no thread_id) gets main-agent.md. Mounted over the generic
+  // skill-maildir.md fragment so the agent sees role-appropriate instructions.
+  const isThreadAgent = !!session.thread_id;
+  const roleFile = path.join(
+    process.cwd(),
+    'container',
+    'skills',
+    'maildir',
+    isThreadAgent ? 'thread-agent.md' : 'main-agent.md',
+  );
+  if (defaultSurfaces && fs.existsSync(roleFile)) {
+    mounts.push({
+      hostPath: roleFile,
+      containerPath: '/workspace/agent/.claude-fragments/skill-maildir.md',
+      readonly: true,
+    });
+  }
+
   // Maildir mounts. Per-thread sessions get their thread inbox mounted at
   // /workspace/mail/thread/ and the shared outbox at /workspace/mail/out/.
   // Agent-shared sessions get the full mail/ tree.
@@ -330,6 +369,10 @@ export function buildMounts(
       const outDir = path.join(mailDir, 'out');
       if (fs.existsSync(outDir)) {
         mounts.push({ hostPath: outDir, containerPath: '/workspace/mail/out', readonly: false });
+      }
+      const escDir = path.join(mailDir, 'escalations');
+      if (fs.existsSync(escDir)) {
+        mounts.push({ hostPath: escDir, containerPath: '/workspace/mail/escalations', readonly: false });
       }
     } else {
       mounts.push({ hostPath: mailDir, containerPath: '/workspace/mail', readonly: false });

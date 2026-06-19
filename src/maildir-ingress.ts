@@ -22,6 +22,8 @@ import type { InboundEvent } from './channels/adapter.js';
 export interface MaildirAdaptor {
   responseExpected(event: InboundEvent, mg: MessagingGroup): string;
   threadId(event: InboundEvent, mg: MessagingGroup): string;
+  /** When true, the message routes to the main agent instead of a thread agent. */
+  isMainAgent?(event: InboundEvent, mg: MessagingGroup): boolean;
   /** Fire-and-forget signal that a message has been ingested (e.g. send typing indicator). */
   onIngested?(event: InboundEvent, mg: MessagingGroup): void;
 }
@@ -66,12 +68,30 @@ export function writeMaildirIngress(
     const now = new Date();
     const messageId = `<${crypto.randomUUID()}@${os.hostname()}>`;
     const adaptor = adaptors.get(event.channelType);
-    const threadId = adaptor ? adaptor.threadId(event, mg) : (event.threadId ?? mg.id);
+    let threadId = adaptor ? adaptor.threadId(event, mg) : (event.threadId ?? mg.id);
     const responseExpected = adaptor ? adaptor.responseExpected(event, mg) : 'yes';
+    const isMainAgent = adaptor?.isMainAgent?.(event, mg) ?? false;
 
-    // Ensure the response outbox exists. Convention: mail/out/<channel>/<chatId>/
+    // Check outbox .binding for Thread-Override — forces all messages through
+    // this channel into a single thread (cross-channel conversations).
     const chatId = event.platformId.includes(':') ? event.platformId.split(':').slice(1).join(':') : event.platformId;
     const addressPath = chatId;
+    const bindingFile = path.join(GROUPS_DIR, agentGroup.folder, 'mail', 'out', event.channelType, addressPath, '.binding');
+    if (fs.existsSync(bindingFile)) {
+      try {
+        const bindingRaw = fs.readFileSync(bindingFile, 'utf-8');
+        for (const line of bindingRaw.split('\n')) {
+          if (line.startsWith('Thread-Override:')) {
+            threadId = line.slice('Thread-Override:'.length).trim();
+            break;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Ensure the response outbox exists. Convention: mail/out/<channel>/<chatId>/
     const outboxDir = path.join(GROUPS_DIR, agentGroup.folder, 'mail', 'out', event.channelType, addressPath);
     if (!fs.existsSync(path.join(outboxDir, 'new'))) {
       scaffoldOutboxMaildir(agentGroup.folder, event.channelType, addressPath);
@@ -109,6 +129,9 @@ export function writeMaildirIngress(
 
     if (event.threadId) {
       headers.push(`X-Thread-ID: ${event.threadId}`);
+    }
+    if (isMainAgent) {
+      headers.push('Is-Main-Agent: true');
     }
 
     const message = headers.join('\n') + '\n\n' + body + '\n';
