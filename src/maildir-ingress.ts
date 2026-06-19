@@ -22,6 +22,8 @@ import type { InboundEvent } from './channels/adapter.js';
 export interface MaildirAdaptor {
   responseExpected(event: InboundEvent, mg: MessagingGroup): string;
   threadId(event: InboundEvent, mg: MessagingGroup): string;
+  /** Fire-and-forget signal that a message has been ingested (e.g. send typing indicator). */
+  onIngested?(event: InboundEvent, mg: MessagingGroup): void;
 }
 
 const adaptors = new Map<string, MaildirAdaptor>();
@@ -68,9 +70,7 @@ export function writeMaildirIngress(
     const responseExpected = adaptor ? adaptor.responseExpected(event, mg) : 'yes';
 
     // Ensure the response outbox exists. Convention: mail/out/<channel>/<chatId>/
-    const chatId = event.platformId.includes(':')
-      ? event.platformId.split(':').slice(1).join(':')
-      : event.platformId;
+    const chatId = event.platformId.includes(':') ? event.platformId.split(':').slice(1).join(':') : event.platformId;
     const addressPath = chatId;
     const outboxDir = path.join(GROUPS_DIR, agentGroup.folder, 'mail', 'out', event.channelType, addressPath);
     if (!fs.existsSync(path.join(outboxDir, 'new'))) {
@@ -125,6 +125,14 @@ export function writeMaildirIngress(
       channelType: event.channelType,
       messageId,
     });
+
+    if (adaptor?.onIngested) {
+      try {
+        adaptor.onIngested(event, mg);
+      } catch {
+        // best-effort
+      }
+    }
   } catch (err) {
     log.warn('Maildir ingress write failed', { folder: agentGroup.folder, err });
   }

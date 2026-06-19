@@ -8,13 +8,11 @@ The system treats mail as the durable integration substrate.
 
 The agent is not responsible for Telegram, Discord, email, cron, webhooks, or other transports. Those are host-side or adaptor-container concerns.
 
-The agent's responsibility is:
+The system has three agent roles:
 
-1. Read promoted messages from its waking inbox.
-2. Render context when needed.
-3. Decide what to do.
-4. Optionally write one or more outbound RFC822 messages into granted response Maildirs.
-5. Maintain its own scratch/context files.
+- **Thread agents** — persistent subagents, each bound to a single `Thread-ID`. They own conversational continuity for one thread and escalate when the user should be informed or action is needed.
+- **Main agent** — the user-facing judgment authority. It reviews escalations from thread agents, decides what to do, and is the only agent that contacts the user directly.
+- **Thread dispatcher** — a host-side component that groups unread messages by `Thread-ID`, finds or creates the appropriate thread agent, and delivers messages.
 
 The surrounding host/adaptor processes are responsible for:
 
@@ -23,6 +21,7 @@ The surrounding host/adaptor processes are responsible for:
 3. Delivering outbound messages.
 4. Maintaining bindings and secrets.
 5. Moving messages through Maildir lifecycle states.
+6. Dispatching messages to thread agents by `Thread-ID`.
 
 ---
 
@@ -148,6 +147,20 @@ Access control — which users or channels may write to the inbox — is enforce
 The agent trusts whatever the ingress placed in its inbox.
 
 This means roles, membership gates, and unknown-sender policies are ingress concerns. The agent never has to reason about them.
+
+### 3.12 Thread-ID Owns Context
+
+A `Thread-ID` is not merely a rendering key.
+
+A `Thread-ID` identifies a persistent thread-local agent context.
+
+```text
+Thread-ID → thread agent instance
+```
+
+Each thread agent owns exactly one conversational context. It persists across messages in that thread, receives only new unread messages for that same thread, and does not process unrelated threads.
+
+This prevents context tax (repeatedly loading unrelated histories) and context contamination (unrelated thread histories polluting each other inside one model context).
 
 ---
 
@@ -506,30 +519,294 @@ The wake event does not include message contents. The agent reads the Maildir it
 
 The agent runs in a Docker container. The container is the blast radius boundary — the agent has more authority inside the container than would be acceptable in a bare host environment.
 
+Each thread agent gets its own persistent Claude session within the container. The container hosts multiple thread agent sessions, each keyed by `Thread-ID`. Thread agent sessions are isolated — they share the container filesystem but maintain separate model contexts.
+
 If cold-start latency becomes a problem in practice, keep-alive makework (a no-op loop or periodic ping) is the first lever to pull. The container model is not changed until there is performance data justifying it.
 
 ---
 
-## 13. Agent Processing Contract
+## 13. Thread Dispatcher
 
-When awakened, the agent should:
+The thread dispatcher is a host-side component responsible for thread-agent routing. It runs in the NanoClaw host process, not inside agent containers.
 
-1. List messages in `mail/inbox/new`.
-2. Read each message.
-3. Optionally render context from the message.
-4. Decide whether a response or other action is needed.
-5. If responding, write a valid RFC822 message to the specified `Response-Maildir`.
-6. Preserve `Thread-ID`.
-7. Use `In-Reply-To` and `References` when replying.
-8. Move handled inbound messages to `mail/inbox/cur/` with `S`.
-9. Maintain scratch files as needed.
-10. Avoid modifying source messages.
+### 13.1 Dispatch Algorithm
+
+```text
+watch inbox/new for arriving messages
+group unread messages by Thread-ID
+for each Thread-ID:
+  find existing thread agent or create one
+  pass all unread messages for that Thread-ID as one invocation
+  move passed messages from new/ to cur/:2,S
+```
+
+### 13.2 Responsibilities
+
+The dispatcher:
+
+- Groups unread messages by `Thread-ID`.
+- Finds or creates the thread agent for each `Thread-ID`.
+- Delivers all unread messages for a `Thread-ID` as a single batch.
+- Moves delivered messages to `cur/:2,S`.
+- Marks escalated messages `cur/:2,SF` when a thread agent calls `notify_user` or `request_action`.
+
+The dispatcher is distinct from the transport adaptor. Adaptors create mail; the dispatcher routes it to thread agents.
+
+### 13.3 Adaptor vs Dispatcher
+
+```text
+Ingress adaptor:
+  creates authoritative RFC822 mail
+  assigns Thread-ID according to channel rules
+  writes to inbox/new
+
+Thread dispatcher:
+  reads inbox/new
+  groups by Thread-ID
+  routes to thread agents
+  manages message lifecycle (new/ → cur/)
+```
 
 ---
 
-## 14. Context Rendering
+## 14. Thread Agents
+
+A thread agent is a persistent subagent bound to a single `Thread-ID`.
+
+### 14.1 Properties
+
+A thread agent has:
+
+```text
+one Thread-ID
+one persistent model context (Claude session)
+one channel/adaptor-specific system prompt
+one local notes file or scratch area
+one set of channel-specific guidance documents
+limited tools for escalation or requested action
+```
+
+A thread agent does not have direct authority to contact the user.
+
+A thread agent does not own user-facing judgment.
+
+### 14.2 Lifecycle
+
+**First message in a thread:**
+
+1. The ingress adaptor assigns authoritative headers, including `Thread-ID`.
+2. The thread dispatcher checks whether a thread agent exists for that `Thread-ID`.
+3. If not, the dispatcher creates one.
+4. The dispatcher assembles the thread agent's system prompt according to adaptor/channel rules.
+5. The dispatcher passes all unread messages for that thread as the initial input.
+6. The passed messages are moved from `new/` to `cur/:2,S`.
+
+**Subsequent messages:**
+
+1. The dispatcher finds the existing thread agent.
+2. It gathers all unread messages for that `Thread-ID`.
+3. It passes those unread messages to the same thread agent as a single invocation.
+4. The thread agent already has prior messages, prior responses, and prior decisions in its persistent context.
+5. The passed messages are moved from `new/` to `cur/:2,S`.
+
+### 14.3 System Prompt Assembly
+
+When creating a thread agent, the dispatcher assembles a system prompt from included Markdown files. Conceptual layers:
+
+```text
+global agent rules
+medium rules
+adaptor rules
+channel rules
+thread-specific notes
+notification guidance
+user preference files
+tool instructions
+```
+
+Example paths:
+
+```text
+global/thread-agent.md
+medium/email.md
+provider/gmail.md
+channel/david-gmail.md
+guidance/notification.md
+threads/<thread-id>/notes.md
+```
+
+The assembled prompt tells the thread agent:
+
+1. It owns one message thread only.
+2. It should preserve local continuity.
+3. It should update its local notes when useful.
+4. It should not contact the user directly.
+5. It should use `notify_user` when the user would likely regret not knowing.
+6. It should use `request_action` when the main agent should evaluate or perform an action.
+7. It should avoid escalating low-value noise.
+8. It may propose notification guidance amendments, but must not apply them directly.
+
+---
+
+## 15. Thread Agent Tools
+
+Thread agents receive objective-oriented tools, not plumbing-oriented tools. Tool names describe the desired outcome, not the implementation effect.
+
+### 15.1 `notify_user`
+
+Purpose: request that the user be informed of something.
+
+Implementation: creates an escalation message for the main agent.
+
+The thread agent should not think in terms of "notify main agent". It should think:
+
+> Would the user likely regret not being told about this within the relevant time window?
+
+Tool description:
+
+```text
+Use this when the user would likely regret not being told about this.
+This request will be reviewed by the main agent, which may decide how, when, or whether to notify the user.
+```
+
+### 15.2 `request_action`
+
+Purpose: request that the main agent evaluate or perform an action.
+
+Examples: calendar action, email reply decision, security review, delegation to utility agent, information lookup.
+
+Implementation: creates an action request message for the main agent.
+
+### 15.3 Tool Effects
+
+Both `notify_user` and `request_action`:
+
+- Send an escalation/request to the main agent.
+- Include the thread message(s).
+- Include thread-agent notes.
+- Include relevant guidance path(s).
+- Mark the source messages Flagged: `cur/...:2,SF`.
+
+Neither tool directly contacts the user.
+
+---
+
+## 16. Notification Judgment Criterion
+
+The thread agent should not use "Should the user be notified?" as its primary discriminator. That question biases too strongly toward interruption avoidance.
+
+Instead, the thread agent should use:
+
+> If the user found out about this a week later and learned they were not notified, would they regret it?
+
+Or more generally:
+
+> Would silence create future regret?
+
+This captures non-urgent but costly-to-miss information.
+
+Examples that may justify `notify_user`:
+
+```text
+deadline or expiring opportunity
+security, money, health, legal, or work consequence
+direct request from the user
+reply expected from the user
+rare/high-signal event matching an active intent
+something that changes a prior plan
+```
+
+The thread agent raises regret-risk candidates. The main agent decides delivery.
+
+---
+
+## 17. Main Agent Review Loop
+
+Thread agents do not communicate with the user. They send notification/action requests to the main agent.
+
+The main agent is the user-facing judgment authority.
+
+When the main agent receives a `notify_user` or `request_action` escalation, the runtime forks the main agent's current context. The fork receives:
+
+```text
+the escalation/request message
+the relevant source message(s)
+the thread agent's notes
+the path to the thread/channel notification guidance document
+any relevant thread/channel/medium guidance excerpts
+```
+
+The forked main agent decides what to do.
+
+### 17.1 Possible Outcomes
+
+**`notify-now`** — The main agent contacts the user directly. Also adds the item to the nightly digest, marked as already notified.
+
+**`digest-attention`** — Not urgent enough for immediate interruption. Added to a digest for later user attention.
+
+**`dismiss`** — No user-facing attention needed. May record a brief reason.
+
+**`delegate-action`** — Delegates to a utility agent (calendar, email drafting, research, archive/search).
+
+**`amend-guidance`** — If the main agent strongly disagrees with the escalation, it may amend the relevant notification guidance document. Appropriate for obvious spam, phishing, abusive messages, or recurring low-value false positives. Amendments should be narrow and auditable.
+
+Example guidance amendment:
+
+```text
+## 2026-06-18 amendment
+
+Reason:
+Gmail thread agent escalated obvious phishing as urgent.
+
+Change:
+Do not notify for account-emergency emails when sender authentication
+fails and links are suspicious, unless the user has an active intent
+matching the sender or service.
+```
+
+Thread agents may propose amendments. Only the main agent applies them.
+
+### 17.2 Main-Thread Ledger
+
+If the main agent decides to notify the user or perform a user-relevant action, a compact ledger entry is inserted into the main agent's persistent context.
+
+Purpose: the main agent's ongoing user-facing context knows that the user was contacted or that an action occurred, without loading the full thread.
+
+Example:
+
+```text
+2026-06-18: Notified user about Thread-ID email:gmail:kickstarter-456 —
+Kickstarter shipping-delay update; low urgency; also added to nightly
+digest as notified.
+```
+
+Ledger entries include: date/time, action taken, brief reason, Thread-ID, digest status, lookup path or message ID.
+
+Note: the main agent's persistent session is a design commitment for the next implementation phase.
+
+---
+
+## 18. Digest Handling
+
+The system maintains two digest pathways.
+
+### 18.1 Notified Digest Items
+
+Items the user was already directly notified about. Purpose: recordkeeping, nightly recap, avoid duplicate surprise.
+
+### 18.2 Attention Digest Items
+
+Items not urgent enough for immediate interruption but worth showing later. Purpose: batch low/medium priority user attention, reduce interruption load, preserve useful signal.
+
+A main-agent decision can send an item to either or both.
+
+---
+
+## 19. Context Rendering
 
 Context rendering begins from a leaf message.
+
+Active thread continuity is maintained by persistent thread agents keyed by `Thread-ID`. Context rendering is no longer the primary active context mechanism — it is a fallback for recovery, debugging, audit, cold-start, and manual inspection.
 
 Command shape:
 
@@ -537,7 +814,7 @@ Command shape:
 render-context <message-path> --purpose agent-context --budget 12000
 ```
 
-### 14.1 Generic Render Algorithm
+### 19.1 Generic Render Algorithm
 
 ```text
 input: message path
@@ -552,13 +829,27 @@ sort by Date
 render as Markdown transcript
 ```
 
-### 14.2 Rendering Purposes
+### 19.2 Rendering Purposes
 
 MVP only needs `agent-context`. Future purposes: `triage-context`, `summary-refresh`, `human-debug`, `audit`.
 
+### 19.3 Constraints
+
+Rendered context must remain:
+
+```text
+bounded
+lossy
+non-recursive
+derived from source mail
+excluded from mail truth
+```
+
+Rendered context must never be written back into source mail as conversation content.
+
 ---
 
-## 15. Scratch Context Files
+## 20. Scratch Context Files
 
 Scratch files are persistent working context included in the agent's project context.
 
@@ -582,7 +873,7 @@ Example inclusion in project context:
 
 ---
 
-## 16. System Events and Cron
+## 21. System Events and Cron
 
 Cron and system events are just mail.
 
@@ -605,7 +896,7 @@ No special agent pathway is needed.
 
 ---
 
-## 17. Multi-Agent Future
+## 22. Multi-Agent Future
 
 Each agent has its own container and mounted Maildir tree.
 
@@ -620,9 +911,9 @@ Agents communicate through mail. A host-side router moves messages between agent
 
 ---
 
-## 18. Host Components
+## 23. Host Components
 
-### 18.1 Ingress Adaptor
+### 23.1 Ingress Adaptor
 
 - Receive external event.
 - Construct RFC822 message.
@@ -631,13 +922,16 @@ Agents communicate through mail. A host-side router moves messages between agent
 - Enforce access control (before the message reaches the inbox).
 - Write message via `tmp → new` into inbox.
 
-### 18.2 Agent Watcher
+### 23.2 Thread Dispatcher
 
 - Watch `mail/inbox/new`.
-- Wake agent when new messages arrive.
-- Batch wake events when possible.
+- Group unread messages by `Thread-ID`.
+- Find or create thread agent for each `Thread-ID`.
+- Deliver all unread messages for a `Thread-ID` as one batch.
+- Move delivered messages to `cur/:2,S`.
+- Mark escalated messages `cur/:2,SF`.
 
-### 18.3 Egress Adaptor
+### 23.3 Egress Adaptor
 
 - Watch one or more outbound Maildirs.
 - Read new messages.
@@ -647,7 +941,7 @@ Agents communicate through mail. A host-side router moves messages between agent
 - Record failures.
 - Never expose secrets to agent.
 
-### 18.4 Context Renderer
+### 23.4 Context Renderer
 
 - Start from a leaf message.
 - Load related source messages by `Thread-ID`.
@@ -656,7 +950,7 @@ Agents communicate through mail. A host-side router moves messages between agent
 
 ---
 
-## 19. Minimal Tooling
+## 24. Minimal Tooling
 
 ### `mail-write`
 Create an RFC822 message in a Maildir (write to `tmp/`, atomic rename to `new/`).
@@ -681,42 +975,89 @@ Receive Telegram messages and write inbound mail.
 
 ---
 
-## 20. MVP Completion Criteria
+## 25. MVP Completion Criteria
 
-1. A Telegram message from David appears as an RFC822 file in `mail/inbox/new`.
-2. The watcher wakes the agent.
-3. The agent reads the message.
-4. The agent writes a response to `mail/out/telegram/direct/dmj/new`.
-5. The Telegram egress adaptor sends the response.
+Given the context-tax problem (§3.12), the MVP should use thread-agent routing from the start.
+
+1. A Telegram message appears as an RFC822 file in `mail/inbox/new`.
+2. The thread dispatcher groups it by `Thread-ID` and routes to a thread agent.
+3. The thread agent reads the message in its isolated persistent context.
+4. The thread agent writes a response to the `Response-Maildir`.
+5. The Telegram egress adaptor delivers the response.
 6. The response preserves `Thread-ID`.
-7. Both inbound and outbound messages can be rendered together by generic `Thread-ID` context rendering.
-8. No Telegram secrets are visible inside the agent container.
+7. Subsequent messages with the same `Thread-ID` route to the same thread agent.
+8. The thread agent's context grows only with its own thread — no cross-thread contamination.
 9. The system can be tested by manually dropping a message into `mail/inbox/new`.
+10. No Telegram secrets are visible inside the agent container.
 
 ---
 
-## 21. Implementation Order
+## 26. Updated Execution Flow
 
-1. Create directory skeleton.
-2. Implement Maildir-safe write helper.
-3. Implement Telegram binding file.
-4. Implement fake ingress that writes test messages.
-5. Implement fake egress that logs outbound messages.
-6. Wire agent watcher.
-7. Teach agent Maildir contract.
-8. Implement generic `render-context`.
-9. Replace fake ingress with Telegram ingress.
-10. Replace fake egress with Telegram egress.
-11. Add scratch file includes and maintenance instructions.
-12. Add triage later.
-
-Do not implement provider-specific renderers first.
-Do not implement cool triage first.
-Do not implement multi-agent routing first.
+```text
+external message arrives
+  ↓
+ingress adaptor creates RFC822 mail and assigns Thread-ID
+  ↓
+mail appears in inbox/new
+  ↓
+thread dispatcher groups unread messages by Thread-ID
+  ↓
+dispatcher finds existing thread agent or creates one
+  ↓
+dispatcher passes all unread messages for that Thread-ID to the thread agent
+  ↓
+dispatcher moves passed messages new/ → cur/:2,S
+  ↓
+thread agent processes messages in isolated persistent context
+  ↓
+thread agent may do nothing
+  ↓
+thread agent may update local notes
+  ↓
+thread agent may call notify_user / request_action
+  ↓
+source messages become cur/:2,SF if escalated
+  ↓
+main-agent fork reviews escalation/action request
+  ↓
+main agent notifies, digests, dismisses, delegates, or amends guidance
+  ↓
+if user-facing action occurs, compact ledger line added to main agent thread
+```
 
 ---
 
-## 22. Deferred Questions
+## 27. Implementation Order
+
+Phase 1 (done):
+1. Directory skeleton.
+2. Maildir-safe write helper.
+3. Telegram ingress adaptor.
+4. Telegram egress adaptor.
+5. Maildir watcher.
+6. Agent Maildir contract (container skill).
+7. Generic `render-context`.
+8. `INBOUND_MODE` switch (traditional / maildir / both).
+
+Phase 2 (next):
+9. Thread dispatcher — group by `Thread-ID`, route to per-thread sessions.
+10. Thread agent sessions — persistent Claude session per `Thread-ID`.
+11. Thread agent system prompt assembly.
+12. `notify_user` and `request_action` tools for thread agents.
+
+Phase 3 (after thread agents work):
+13. Main agent review loop (fork, outcomes).
+14. Digest handling.
+15. Guidance amendment.
+16. Main-thread ledger.
+
+Do not implement triage before thread agents.
+Do not implement multi-agent routing before the main agent review loop.
+
+---
+
+## 28. Deferred Questions
 
 1. Whether inbound handled messages should be copied into a separate `archive/` Maildir or left in `inbox/cur/`. **Current decision:** leave in `inbox/cur/`; manage growth when usage data justifies it.
 2. Whether outbound sent messages should be copied into global archive.
@@ -726,3 +1067,8 @@ Do not implement multi-agent routing first.
 6. Whether context render caches live under `context/rendered/` or beside threads.
 7. Triage flow: `cool/`, hot vs. cold triage models.
 8. Multi-agent routing protocol.
+9. Thread agent session lifecycle — when to rotate, compact, or discard stale thread agent sessions.
+10. Thread agent resource limits — max concurrent thread agents, session size caps.
+11. Main agent persistent session — how it is bootstrapped, maintained, and rotated.
+12. Cross-thread knowledge sharing — when a thread agent learns something relevant to other threads.
+13. Thread agent handoff — what happens when a thread's channel adaptor changes (e.g. conversation moves from Telegram to email).

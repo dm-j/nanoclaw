@@ -23,8 +23,17 @@ registerMaildirAdaptor('telegram', {
     return event.message.isMention === true ? 'yes' : 'only if you have something material to add';
   },
   threadId(_event, mg) {
-    // Telegram: all DMs from one person = one thread, all messages in a group = one thread.
     return mg.id;
+  },
+  onIngested(event) {
+    const token = readEnvFile(['TELEGRAM_BOT_TOKEN']).TELEGRAM_BOT_TOKEN;
+    if (!token) return;
+    const chatId = event.platformId.includes(':') ? event.platformId.split(':').slice(1).join(':') : event.platformId;
+    fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
+    }).catch(() => {});
   },
 });
 

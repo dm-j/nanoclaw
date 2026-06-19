@@ -74,7 +74,7 @@ function fire(folder: string, inboxNew: string): void {
     kind: 'maildir-wake',
     timestamp: new Date().toISOString(),
     content,
-    onWake: 1,
+    trigger: 1,
   });
 
   log.info('Maildir wake', { folder, agentGroupId: agentGroup.id, sessionId: session.id, count });
@@ -147,7 +147,8 @@ export function stopWatchingMaildir(folder: string): void {
 export function startMaildirWatcher(): void {
   if (!fs.existsSync(GROUPS_DIR)) return;
 
-  const folders = fs.readdirSync(GROUPS_DIR, { withFileTypes: true })
+  const folders = fs
+    .readdirSync(GROUPS_DIR, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name);
 
