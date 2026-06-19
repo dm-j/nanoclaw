@@ -89,7 +89,9 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
   try {
     const existing = JSON.parse(fs.readFileSync(p, 'utf8'));
     if (existing.env && !config.env) config.env = existing.env;
-  } catch { /* first materialization or unreadable — nothing to preserve */ }
+  } catch {
+    /* first materialization or unreadable — nothing to preserve */
+  }
 
   fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
 
