@@ -47,9 +47,10 @@ git show origin/mailman:src/mailman/webhook.ts       > src/mailman/webhook.ts
 git show origin/mailman:src/mailman/feeds.ts         > src/mailman/feeds.ts
 git show origin/mailman:src/mailman/gmail-api.ts     > src/mailman/gmail-api.ts
 
-# Prompts
+# Prompts and persona
 git show origin/mailman:mailman/prompts/email_triage.md > mailman/prompts/email_triage.md
 git show origin/mailman:mailman/prompts/fork_eval.md    > mailman/prompts/fork_eval.md
+git show origin/mailman:mailman/persona/intents.md      > mailman/persona/intents.md
 
 # Test emails
 git show origin/mailman:mailman/test-emails/newsletter.eml            > mailman/test-emails/newsletter.eml
@@ -146,6 +147,23 @@ If `mailman/persona/kernel.md` does not exist, ask the user:
 Then write `mailman/persona/kernel.md` with the template from `${CLAUDE_SKILL_DIR}/kernel.md.template`, substituting the user's name.
 
 If it already exists, skip — don't overwrite.
+
+### 9. Teach the main agent about intents.md
+
+Append the following to the main agent group's `CLAUDE.local.md` (at `groups/<folder>/CLAUDE.local.md`, using the folder from the agent group chosen in step 6). Skip if the block is already present:
+
+```markdown
+
+## Mailman Intents
+
+You can steer email triage by editing `mailman/persona/intents.md`. This file is injected into every triage subagent's prompt. Add directives like:
+
+- "Notify about all package shipping updates"
+- "Emails from @company.co are always from known senders"
+- "Ignore all LinkedIn notifications"
+
+Changes take effect on the next triage — no restart needed.
+```
 
 ## Trust Model
 
