@@ -89,7 +89,7 @@ function saveSeenUpdates(feedName: string, seen: Map<string, string>): void {
   fs.writeFileSync(statePath, JSON.stringify(Object.fromEntries(seen)));
 }
 
-function formatEventAsMessage(event: CalendarEvent, changeType: string): string {
+function formatEventAsMessage(event: CalendarEvent, changeType: string, feedName: string): string {
   const start = event.start?.dateTime || event.start?.date || 'unknown';
   const end = event.end?.dateTime || event.end?.date || '';
   const organizer = event.organizer?.displayName || event.organizer?.email || 'unknown';
@@ -98,7 +98,7 @@ function formatEventAsMessage(event: CalendarEvent, changeType: string): string 
     .join(', ');
 
   const lines = [
-    `Calendar event ${changeType}:`,
+    `Calendar event ${changeType} (feed: ${feedName}, type: gcal):`,
     `Event: ${event.summary || '(no title)'}`,
     `When: ${start}${end ? ' → ' + end : ''}`,
     `Organizer: ${organizer}`,
@@ -154,7 +154,7 @@ async function pollOnce(config: GcalFeedConfig): Promise<void> {
 
       const changeType = event.status === 'cancelled' ? 'cancelled' : seen.has(event.id) ? 'updated' : 'new';
 
-      const body = formatEventAsMessage(event, changeType);
+      const body = formatEventAsMessage(event, changeType, config.feedName);
       const subject = `Calendar: ${event.summary || '(no title)'} — ${changeType}`;
 
       writeToMaildir(body, {
