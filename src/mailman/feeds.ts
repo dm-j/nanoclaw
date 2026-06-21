@@ -5,6 +5,7 @@ import { log } from '../log.js';
 import { startGcalFeed, type GcalFeedConfig } from './gcal-api.js';
 import { startGmailFeed, type GmailFeedConfig } from './gmail-api.js';
 import { startIcsFeed, type IcsFeedConfig } from './ics-feed.js';
+import { startRssFeed, type RssFeedConfig } from './rss-feed.js';
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
 const FEEDS_DIR = path.join(PROJECT_ROOT, 'mailman/feeds');
@@ -19,6 +20,8 @@ interface FeedJson {
   max_future_days?: number;
   max_past_days?: number;
   url?: string;
+  fetch_content?: boolean;
+  max_items?: number;
 }
 
 type FeedHandler = (feedName: string, config: FeedJson) => { stop: () => void };
@@ -55,6 +58,17 @@ const handlers: Record<string, FeedHandler> = {
       maxPastDays: config.max_past_days ?? 1,
     };
     return startIcsFeed(icsConfig);
+  },
+  rss: (feedName, config) => {
+    if (!config.url) throw new Error(`RSS feed "${feedName}" missing required "url" field`);
+    const rssConfig: RssFeedConfig = {
+      feedName,
+      url: config.url,
+      pollIntervalS: config.poll_interval_s ?? 1800,
+      fetchContent: config.fetch_content ?? true,
+      maxItems: config.max_items ?? 10,
+    };
+    return startRssFeed(rssConfig);
   },
 };
 
