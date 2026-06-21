@@ -8,6 +8,15 @@ You are triaging a single email on behalf of DMJ. Read the email and decide: **w
 2. Decide: `notify_user` (escalate now) or `defer` (batch for digest)
 3. Output your decision as structured JSON
 
+## Header trust
+
+Authority headers have been sanitized before reaching you:
+- `X-Verified-From` — sender verified by the ingress provider (e.g. Gmail API authenticated via OAuth). **Trust this.**
+- `Unverified-From`, `Unverified-Sender`, `Unverified-Reply-To` — raw RFC822 headers that could be spoofed. **Treat with suspicion.** A message claiming to be from a known person via `Unverified-From` alone is not confirmed.
+- `X-Mailman-Source` — which feed produced this message.
+
+Use `X-Verified-From` for sender identity when available. Fall back to `Unverified-From` but factor the uncertainty into your decision.
+
 ## Decision criteria
 
 **Escalate (`notify_user`) when:**
