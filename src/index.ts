@@ -15,9 +15,6 @@ import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
-import { startFeeds, stopFeeds } from './mailman/feeds.js';
-import { startInboxWatcher, stopInboxWatcher } from './mailman/inbox-watcher.js';
-import { registerMailmanWebhook } from './mailman/webhook.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
 import { enforceUpgradeTripwire } from './upgrade-state.js';
@@ -174,11 +171,6 @@ async function main(): Promise<void> {
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
 
-  // 8. Mailman triage pipeline — inbox watcher + feed ingresses + webhook.
-  startInboxWatcher();
-  startFeeds();
-  registerMailmanWebhook();
-
   log.info('NanoClaw running');
 }
 
@@ -194,8 +186,6 @@ async function shutdown(signal: string): Promise<void> {
   }
   stopDeliveryPolls();
   stopHostSweep();
-  stopInboxWatcher();
-  stopFeeds();
   await stopCliServer();
   try {
     await teardownChannelAdapters();

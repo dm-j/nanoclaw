@@ -13,10 +13,10 @@ Adds a Gmail account as an input feed for the Mailman triage pipeline. Each invo
 
 ```bash
 grep MAILMAN_AGENT_GROUP_ID .env
-ls mailman/persona/kernel.md mailman/prompts/email_triage.md
+ls src/mailman/feeds.ts src/mailman/gmail-api.ts mailman/persona/kernel.md mailman/prompts/email_triage.md
 ```
 
-If either fails, tell the user to run `/add-mailman` first and stop.
+If any fail, tell the user to run `/add-mailman` first and stop.
 
 ### 2. Choose a feed name
 

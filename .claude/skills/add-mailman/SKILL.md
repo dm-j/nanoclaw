@@ -1,25 +1,106 @@
 ---
 name: add-mailman
-description: Set up the Mailman triage pipeline — configures the target agent group for notifications and the persona kernel. Run this before adding any mailman feeds (e.g. /add-mailman-gmail).
+description: Add the Mailman triage pipeline — email/notification triage with cheap subagents and fork evaluation. Run this before adding any feeds (e.g. /add-mailman-gmail).
 ---
 
 # Add Mailman
 
-Sets up the Mailman email/notification triage pipeline. Mailman watches a shared Maildir inbox, triages incoming messages with cheap subagents, and notifies the main agent when something needs attention.
+Adds the Mailman triage pipeline. Mailman watches a shared Maildir inbox, triages incoming messages with cheap containerised subagents, and notifies the main agent when something needs attention.
 
-This skill configures the core pipeline. To add specific input feeds (Gmail, IMAP, etc.), run the corresponding `/add-mailman-*` skill after this one.
+NanoClaw doesn't ship Mailman in trunk. This skill copies the code in from the `mailman` branch.
 
-## Pre-flight
+## Install
 
-### 1. Verify the mailman source files exist
+### Pre-flight (idempotent)
+
+Skip to **Configure** if all of these are already in place:
+
+- `src/mailman/subagent.ts` exists
+- `src/mailman/feeds.ts` exists
+- `src/mailman/notify.ts` exists
+- `mailman/prompts/email_triage.md` exists
+- `src/index.ts` contains `import './mailman/feeds.js';` (via the mailman barrel)
+
+Otherwise continue. Every step below is safe to re-run.
+
+### 1. Fetch the mailman branch
 
 ```bash
-ls src/mailman/feeds.ts src/mailman/subagent.ts src/mailman/fork.ts src/mailman/notify.ts src/mailman/sanitize.ts src/mailman/spawn.ts
+git fetch origin mailman
 ```
 
-All must exist. If any are missing, the user needs to update their NanoClaw install first.
+### 2. Copy the source files
 
-### 2. Verify OneCLI has a triage agent
+```bash
+mkdir -p src/mailman mailman/prompts mailman/persona mailman/test-emails mailman/state mailman/inbox/new mailman/inbox/cur mailman/inbox/tmp mailman/feeds
+
+# Core pipeline
+git show origin/mailman:src/mailman/spawn.ts        > src/mailman/spawn.ts
+git show origin/mailman:src/mailman/sanitize.ts      > src/mailman/sanitize.ts
+git show origin/mailman:src/mailman/subagent.ts      > src/mailman/subagent.ts
+git show origin/mailman:src/mailman/fork.ts          > src/mailman/fork.ts
+git show origin/mailman:src/mailman/notify.ts        > src/mailman/notify.ts
+git show origin/mailman:src/mailman/inbox-watcher.ts > src/mailman/inbox-watcher.ts
+git show origin/mailman:src/mailman/webhook.ts       > src/mailman/webhook.ts
+
+# Feed system
+git show origin/mailman:src/mailman/feeds.ts         > src/mailman/feeds.ts
+git show origin/mailman:src/mailman/gmail-api.ts     > src/mailman/gmail-api.ts
+
+# Prompts
+git show origin/mailman:mailman/prompts/email_triage.md > mailman/prompts/email_triage.md
+git show origin/mailman:mailman/prompts/fork_eval.md    > mailman/prompts/fork_eval.md
+
+# Test emails
+git show origin/mailman:mailman/test-emails/newsletter.eml            > mailman/test-emails/newsletter.eml
+git show origin/mailman:mailman/test-emails/shipping-delay.eml         > mailman/test-emails/shipping-delay.eml
+git show origin/mailman:mailman/test-emails/urgent-from-known-sender.eml > mailman/test-emails/urgent-from-known-sender.eml
+
+# CLI script
+git show origin/mailman:scripts/mailman-triage.ts > scripts/mailman-triage.ts
+
+# Design docs (optional, for reference)
+git show origin/mailman:docs/mailman-design.md    > docs/mailman-design.md
+git show origin/mailman:docs/mailman-prototype.md > docs/mailman-prototype.md
+```
+
+### 3. Wire into src/index.ts
+
+Add these imports near the other imports at the top of `src/index.ts` (skip if already present):
+
+```typescript
+import { startFeeds, stopFeeds } from './mailman/feeds.js';
+import { startInboxWatcher, stopInboxWatcher } from './mailman/inbox-watcher.js';
+import { registerMailmanWebhook } from './mailman/webhook.js';
+```
+
+Add startup calls at the end of the `main()` function, before `log.info('NanoClaw running')`:
+
+```typescript
+  // 8. Mailman triage pipeline — inbox watcher + feed ingresses + webhook.
+  startInboxWatcher();
+  startFeeds();
+  registerMailmanWebhook();
+```
+
+Add shutdown calls in the `shutdown()` function, near the other stop calls:
+
+```typescript
+  stopInboxWatcher();
+  stopFeeds();
+```
+
+### 4. Build and validate
+
+```bash
+pnpm run build
+```
+
+Must be clean before proceeding.
+
+## Configure
+
+### 5. Verify OneCLI has a triage agent
 
 ```bash
 onecli agents list 2>&1 | grep -i mailman
@@ -32,9 +113,7 @@ onecli agents create --id mailman-triage --name "Mailman Triage"
 onecli agents set-secret-mode --id mailman-triage --mode all
 ```
 
-## Configure
-
-### 3. Pick the target agent group
+### 6. Pick the target agent group
 
 Ask the user which agent group should receive mailman notifications. This is the "main agent" that decides how to notify the user.
 
@@ -44,7 +123,7 @@ pnpm exec tsx scripts/q.ts data/v2.db "SELECT id, workspace FROM agent_groups"
 
 Show the list and let the user pick. Store the chosen ID.
 
-### 4. Set MAILMAN_AGENT_GROUP_ID
+### 7. Set MAILMAN_AGENT_GROUP_ID
 
 Check if already set:
 
@@ -55,15 +134,10 @@ grep MAILMAN_AGENT_GROUP_ID .env 2>/dev/null
 If not set (or wrong), append/update:
 
 ```bash
-# Use the ID the user chose in step 3
 echo 'MAILMAN_AGENT_GROUP_ID=<chosen-id>' >> .env
 ```
 
-### 5. Create persona kernel if absent
-
-```bash
-mkdir -p mailman/persona
-```
+### 8. Create persona kernel if absent
 
 If `mailman/persona/kernel.md` does not exist, ask the user:
 
@@ -73,37 +147,6 @@ Then write `mailman/persona/kernel.md` with the template from `${CLAUDE_SKILL_DI
 
 If it already exists, skip — don't overwrite.
 
-### 6. Ensure prompt files exist
-
-```bash
-ls mailman/prompts/email_triage.md mailman/prompts/fork_eval.md
-```
-
-Both must exist. If missing, the user's install is incomplete.
-
-### 7. Create Maildir structure
-
-```bash
-mkdir -p mailman/inbox/new mailman/inbox/cur mailman/inbox/tmp
-mkdir -p mailman/feeds
-```
-
-### 8. Build and verify
-
-```bash
-pnpm run build
-```
-
-Must be clean.
-
-## Done
-
-Tell the user:
-
-> Mailman core is configured. The triage pipeline will start on next service restart. To add input feeds, run `/add-mailman-gmail` (or other feed skills when available).
->
-> To restart now: `launchctl kickstart -k gui/$(id -u)/com.nanoclaw`
-
 ## Trust Model
 
 Mailman sanitizes authority headers (From, Sender, Reply-To, etc.) before they reach the triage model. Each ingress stamps what it can verify:
@@ -112,10 +155,19 @@ Mailman sanitizes authority headers (From, Sender, Reply-To, etc.) before they r
 - `X-Mailman-Trust: <method>` — how the ingress authenticated (e.g. `gmail-api`)
 - `X-Verified-From: <address>` — sender identity verified by the provider
 
-The sanitizer rewrites raw authority headers to `Unverified-*` so the triage model can distinguish verified from unverified sender info. Future feed types (Telegram, IMAP, etc.) should stamp `X-Verified-*` for whatever they can authenticate and leave the rest to the sanitizer.
+The sanitizer rewrites raw authority headers to `Unverified-*` so the triage model can distinguish verified from unverified sender info. Future feed types should stamp `X-Verified-*` for whatever they can authenticate and leave the rest to the sanitizer.
+
+## Done
+
+Tell the user:
+
+> Mailman core is installed and configured. The triage pipeline will start on next service restart. To add input feeds, run `/add-mailman-gmail` (or other feed skills when available).
+>
+> To restart now: `launchctl kickstart -k gui/$(id -u)/com.nanoclaw`
 
 ## Troubleshooting
 
-- **"MAILMAN_AGENT_GROUP_ID not set"** in logs — step 4 was missed or .env wasn't saved
+- **"MAILMAN_AGENT_GROUP_ID not set"** in logs — step 7 was missed or .env wasn't saved
 - **OneCLI errors** — verify `onecli agents list` shows `mailman-triage` with `secretMode: all`
 - **No notifications arriving** — check the target agent group has an active session and a wired channel
+- **Build fails on missing imports** — verify step 3 added all three imports and both startup/shutdown blocks
