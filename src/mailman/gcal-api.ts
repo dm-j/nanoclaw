@@ -112,16 +112,20 @@ function formatEventAsMessage(event: CalendarEvent, changeType: string, feedName
   return lines.join('\n');
 }
 
-async function pollOnce(config: GcalFeedConfig): Promise<void> {
+interface PollWindow {
+  futureMs: number;
+  updatedWithinMs: number;
+}
+
+async function pollOnce(config: GcalFeedConfig, window: PollWindow): Promise<void> {
   const ctx = await getProxyContext(config.agentId);
   if (!ctx) return;
 
   try {
     const now = new Date();
     const timeMin = new Date(now.getTime() - config.maxPastDays * 86400_000).toISOString();
-    const timeMax = new Date(now.getTime() + config.maxFutureDays * 86400_000).toISOString();
-    // updatedMin: only events changed since last poll (minus buffer)
-    const updatedMin = new Date(now.getTime() - config.pollIntervalS * 2000).toISOString();
+    const timeMax = new Date(now.getTime() + window.futureMs).toISOString();
+    const updatedMin = new Date(now.getTime() - window.updatedWithinMs).toISOString();
 
     const params = new URLSearchParams({
       timeMin,
@@ -183,8 +187,51 @@ async function pollOnce(config: GcalFeedConfig): Promise<void> {
   }
 }
 
+// Tiered polling: check nearby events frequently, distant events less often.
+// All offsets -2min from clock boundaries to catch last-minute changes.
+const HOUR_MS = 3600_000;
+const DAY_MS = 86400_000;
+const OFFSET_MS = -2 * 60_000;
+
+interface PollTier {
+  intervalMs: number;
+  window: PollWindow;
+  label: string;
+}
+
+const TIERS: PollTier[] = [
+  { intervalMs: 5 * 60_000, window: { futureMs: HOUR_MS, updatedWithinMs: 10 * 60_000 }, label: '5min/1h' },
+  { intervalMs: 15 * 60_000, window: { futureMs: DAY_MS, updatedWithinMs: 30 * 60_000 }, label: '15min/24h' },
+  { intervalMs: HOUR_MS, window: { futureMs: 7 * DAY_MS, updatedWithinMs: 2 * HOUR_MS }, label: '1h/7d' },
+  { intervalMs: DAY_MS, window: { futureMs: 14 * DAY_MS, updatedWithinMs: 2 * DAY_MS }, label: '24h/14d' },
+];
+
+function scheduleAligned(
+  intervalMs: number,
+  fn: () => void,
+): { timer: ReturnType<typeof setTimeout>; clear: () => void } {
+  const now = Date.now();
+  const nextSlot = Math.ceil((now - OFFSET_MS) / intervalMs) * intervalMs + OFFSET_MS;
+  const initialDelay = Math.max(nextSlot - now, 0);
+
+  let interval: ReturnType<typeof setInterval> | null = null;
+  const startup = setTimeout(() => {
+    fn();
+    interval = setInterval(fn, intervalMs);
+  }, initialDelay);
+
+  return {
+    timer: startup,
+    clear: () => {
+      clearTimeout(startup);
+      if (interval) clearInterval(interval);
+    },
+  };
+}
+
 export function startGcalFeed(config: GcalFeedConfig): { stop: () => void } {
   let running = true;
+  const cleanups: Array<() => void> = [];
 
   getProxyContext(config.agentId).then((ctx) => {
     if (!ctx) {
@@ -193,40 +240,25 @@ export function startGcalFeed(config: GcalFeedConfig): { stop: () => void } {
     }
     ctx.dispatcher.close();
 
-    const intervalMs = config.pollIntervalS * 1000;
-    // ponytail: offset polls by -2min from clock boundaries so we catch
-    // last-minute changes aimed at round times (e.g. cancel at 1:59, poll at :03)
-    const OFFSET_MS = -2 * 60_000;
-    const now = Date.now();
-    const nextSlot = Math.ceil((now - OFFSET_MS) / intervalMs) * intervalMs + OFFSET_MS;
-    const initialDelay = Math.max(nextSlot - now, 0);
-
-    log.info('GCal feed started', {
+    log.info('GCal feed started (tiered polling)', {
       feed: config.feedName,
-      pollIntervalS: config.pollIntervalS,
       calendarId: config.calendarId,
-      firstPollIn: `${Math.round(initialDelay / 1000)}s`,
+      tiers: TIERS.map((t) => t.label),
     });
 
-    // Align to clock: first poll at next :03/:08/:13/etc, then every interval
-    const startup = setTimeout(() => {
-      if (!running) return;
-      pollOnce(config).catch((err) => log.error('GCal poll failed', { feed: config.feedName, err }));
-
-      const timer = setInterval(() => {
-        if (running) pollOnce(config).catch((err) => log.error('GCal poll failed', { feed: config.feedName, err }));
-      }, intervalMs);
-
-      handle.stop = () => {
-        running = false;
-        clearInterval(timer);
-        log.info('GCal feed stopped', { feed: config.feedName });
-      };
-    }, initialDelay);
+    for (const tier of TIERS) {
+      const scheduled = scheduleAligned(tier.intervalMs, () => {
+        if (!running) return;
+        pollOnce(config, tier.window).catch((err) =>
+          log.error('GCal poll failed', { feed: config.feedName, tier: tier.label, err }),
+        );
+      });
+      cleanups.push(scheduled.clear);
+    }
 
     handle.stop = () => {
       running = false;
-      clearTimeout(startup);
+      for (const cleanup of cleanups) cleanup();
       log.info('GCal feed stopped', { feed: config.feedName });
     };
   });
@@ -234,6 +266,7 @@ export function startGcalFeed(config: GcalFeedConfig): { stop: () => void } {
   const handle = {
     stop: () => {
       running = false;
+      for (const cleanup of cleanups) cleanup();
     },
   };
   return handle;
