@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { log } from '../log.js';
+import { startGcalFeed, type GcalFeedConfig } from './gcal-api.js';
 import { startGmailFeed, type GmailFeedConfig } from './gmail-api.js';
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
@@ -13,6 +14,9 @@ interface FeedJson {
   poll_interval_s?: number;
   max_age_days?: number;
   query?: string;
+  calendar_id?: string;
+  max_future_days?: number;
+  max_past_days?: number;
 }
 
 type FeedHandler = (feedName: string, config: FeedJson) => { stop: () => void };
@@ -28,6 +32,17 @@ const handlers: Record<string, FeedHandler> = {
       query: config.query ?? 'is:unread category:primary',
     };
     return startGmailFeed(gmailConfig);
+  },
+  gcal: (feedName, config) => {
+    const gcalConfig: GcalFeedConfig = {
+      feedName,
+      agentId: config.agent_id,
+      pollIntervalS: config.poll_interval_s ?? 300,
+      calendarId: config.calendar_id ?? 'primary',
+      maxFutureDays: config.max_future_days ?? 30,
+      maxPastDays: config.max_past_days ?? 1,
+    };
+    return startGcalFeed(gcalConfig);
   },
 };
 
