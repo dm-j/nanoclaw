@@ -193,21 +193,40 @@ export function startGcalFeed(config: GcalFeedConfig): { stop: () => void } {
     }
     ctx.dispatcher.close();
 
+    const intervalMs = config.pollIntervalS * 1000;
+    // ponytail: offset polls by -2min from clock boundaries so we catch
+    // last-minute changes aimed at round times (e.g. cancel at 1:59, poll at :03)
+    const OFFSET_MS = -2 * 60_000;
+    const now = Date.now();
+    const nextSlot = Math.ceil((now - OFFSET_MS) / intervalMs) * intervalMs + OFFSET_MS;
+    const initialDelay = Math.max(nextSlot - now, 0);
+
     log.info('GCal feed started', {
       feed: config.feedName,
       pollIntervalS: config.pollIntervalS,
       calendarId: config.calendarId,
+      firstPollIn: `${Math.round(initialDelay / 1000)}s`,
     });
 
-    pollOnce(config).catch((err) => log.error('Initial GCal poll failed', { feed: config.feedName, err }));
+    // Align to clock: first poll at next :03/:08/:13/etc, then every interval
+    const startup = setTimeout(() => {
+      if (!running) return;
+      pollOnce(config).catch((err) => log.error('GCal poll failed', { feed: config.feedName, err }));
 
-    const timer = setInterval(() => {
-      if (running) pollOnce(config).catch((err) => log.error('GCal poll failed', { feed: config.feedName, err }));
-    }, config.pollIntervalS * 1000);
+      const timer = setInterval(() => {
+        if (running) pollOnce(config).catch((err) => log.error('GCal poll failed', { feed: config.feedName, err }));
+      }, intervalMs);
+
+      handle.stop = () => {
+        running = false;
+        clearInterval(timer);
+        log.info('GCal feed stopped', { feed: config.feedName });
+      };
+    }, initialDelay);
 
     handle.stop = () => {
       running = false;
-      clearInterval(timer);
+      clearTimeout(startup);
       log.info('GCal feed stopped', { feed: config.feedName });
     };
   });
