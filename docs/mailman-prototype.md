@@ -1,6 +1,6 @@
 # Mailman Prototype
 
-**Status:** Ready to build
+**Status:** Superseded — prototype proved the concept, then evolved into the multi-feed architecture described in `mailman-design.md`
 **Goal:** Prove the core mechanical loop — untrusted input handled by a containerised subagent that never touches the host filesystem.
 
 ## What this proves

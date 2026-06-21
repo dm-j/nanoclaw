@@ -1,377 +1,238 @@
 # Mailman: Triage Pipeline Design Document
 
-**Status:** MVP Design — Ready for Refinement
-**Authored by:** DMJ + Claude (design session, 2026-06-19)
-**Intended audience:** Claude Code (implementation)
+**Status:** Implemented — multi-feed architecture with Gmail, Google Calendar, and ICS feeds
+**Authored by:** DMJ + Claude (design sessions, 2026-06-19 through 2026-06-20)
+**Code location:** `mailman` branch (installed via `/add-mailman` skill)
 
 ---
 
 ## 1. Overview
 
-Mailman is a personal agent runtime for triaging untrusted input (email, chat, notifications) on behalf of a primary user. Its core security property is that **the main agent never evaluates untrusted input directly**. All untrusted content is handled by isolated subagents with fresh contexts and restricted tool surfaces.
+Mailman is a personal triage pipeline for untrusted input (email, calendar changes, notifications). Its core security property is that **the main agent never evaluates untrusted input directly**. All untrusted content is handled by isolated subagents with fresh contexts and restricted tool surfaces.
 
-The system is orchestrated by a **TypeScript service**. Claude Code instances are invoked as capable subprocesses — inference endpoints with tool access — not as the orchestrator. The TypeScript service owns all state management, lifecycle, and cadence.
+The system is orchestrated by the NanoClaw host process (TypeScript). Claude Code instances are invoked as stateless subprocesses — inference endpoints with no tool access — not as the orchestrator.
 
 ---
 
 ## 2. Core Security Principle
 
 ```
-Untrusted input → Subagent (quarantined, fresh context)
+Untrusted input → Sanitizer (header trust model)
                        ↓
-              [escalation only, via tool call]
+              Subagent (quarantined, fresh context, no tools)
                        ↓
-           Main Agent Fork (different model, controlled context)
+              [escalation only, structured JSON]
+                       ↓
+              Fork (snapshot of main agent's context)
                        ↓
               [agreed summaries only]
                        ↓
-              Main Agent live context
+              Main Agent (notification via session message)
 ```
 
-Original untrusted content never enters the main agent's context. The subagent's processed summary is the trust boundary. The fork runs on a different model from the input subagent, raising the cost of a cross-model prompt injection attack.
+Original untrusted content never enters the main agent's context. The subagent produces a structured JSON summary; the fork evaluates the **claim**, not the raw message.
 
-**Container isolation:** All subagents run in Docker containers with scratch-only RW mounts. No host filesystem access, no credentials, no NanoClaw state. The host receives only structured tool-call output from stdout.
+### Header Trust Model
+
+Authority headers (From, Sender, Reply-To) in raw input are **untrusted**. The sanitizer (`sanitize.ts`) rewrites them to `Unverified-*` before the triage subagent sees them. Each ingress stamps what it can verify:
+
+- `X-Mailman-Source: <feed-name>` — which feed produced this message
+- `X-Mailman-Trust: <method>` — how the ingress authenticated (e.g. `gmail-api`, `gcal-api`, `ics-file`)
+- `X-Verified-From: <address>` — sender identity verified by the provider
+
+The triage prompt teaches the subagent to trust `X-Verified-From` and treat `Unverified-From` with suspicion.
+
+### Attachment Stripping
+
+Base64-encoded MIME parts are stripped before reaching the triage subagent, replaced with `[attachment stripped: image/png, 3.2MB]`. Hard cap at 32KB total. This prevents large attachments from overwhelming the model's context.
 
 ---
 
 ## 3. Agent Roles
 
-Three distinct agent roles with distinct prompts and model tiers:
+| Role | Question asked | Model | Implementation |
+|---|---|---|---|
+| **Triage subagent** | Would DMJ regret missing this? | Cheap (Haiku) | `subagent.ts` |
+| **Fork evaluator** | Given everything I know, does this warrant interrupting? | Same as main agent | `fork.ts` |
 
-| Role | Question asked | Model tier |
-|---|---|---|
-| **Input subagent** | Would DMJ regret missing this? | Cheap / fast (e.g. Haiku) |
-| **Digest sweep agent** | Does this batch constitute a pattern? | Mid-tier (e.g. Sonnet) |
-| **Main agent fork** | Does this warrant action or notification? | Same class as main agent |
+### Fork = Main Agent Snapshot
 
----
+The fork evaluator is not a generic second-opinion model. It's a **read-only snapshot of the main agent's mind** — same CLAUDE.md, same model, same recent conversation transcript (`.jsonl`). It has the user's learned priorities, current projects, and recent context.
 
-## 4. Agent Persona Files
+The main agent's transcript changes slowly, so the API prompt cache stays warm across fork invocations. Multiple emails arriving in the same window all hit the cached prefix. This makes the fork cheaper than a standalone evaluator despite using a more capable model.
 
-The main agent persona is split into two files to balance identity integrity against injection cost:
-
-### `kernel.md`
-- Injected **verbatim** into all subagent system prompts
-- Contains: core identity, behavioural axioms, decision-making priors, trust hierarchy, escalation disposition
-- **User-writable only.** The main agent may propose changes but must not self-apply them.
-- Small by design — authoritative and cheap to inject everywhere
-
-### `extended.md`
-- **Summarised** before injection (cheap model, triggered on file modification)
-- Contains: accumulated context, ongoing projects, interests, communication style, relationship notes
-- Agent-writable with audit logging
-- Summarisation loss is acceptable — this is context, not identity. Flattened nuance here means the agent is slightly less informed. Flattened nuance in `kernel.md` means the agent behaves differently. That asymmetry is the reason for the split.
-
-### `intents.md`
-- Injected **verbatim** into all subagent system prompts
-- Maintained by the main agent: free-form notes on elevated-interest topics, senders, channels
-- **All changes trigger a user notification** (human-readable, e.g. "Added to interest list: shipping and delivery tracking")
-- Writable only by the main agent (which never sees raw untrusted input — only summaries the fork has approved)
-- Attack chain to poison intents requires: surviving input subagent triage → persuading a different-model fork → persuading the live main agent → triggering a visible user notification. This is the intended defence depth.
-
-### User Capsule
-- Injected verbatim into all subagent system prompts
-- Basic data about the primary user to help subagents perform tasks with user needs in mind
-- User-writable only
+**Fallback:** If no main agent session exists (e.g. before first user message), falls back to standalone kernel persona with Haiku.
 
 ---
 
-## 5. Input Subagent: Stateless (Email, Notifications)
+## 4. Persona Files
 
-One throwaway Claude Code instance per input. No persistent state.
+### `kernel.md` (verbatim injection into triage subagents)
+Core identity, decision-making priors, trust hierarchy. User-writable only. Small by design.
 
-### Lifecycle (managed by TypeScript service)
+### `intents.md` (verbatim injection into triage subagents)
+Standing directives from the main agent that override default triage behavior. Examples: "Notify about all package shipping updates", "Emails from @company.co are always from known senders".
 
-```
-1. Write input payload to temp file
-2. Docker run: scratch RW, persona + prompt RO, input RO
-3. claude -p inside container, parses input, emits tool call
-4. Host parses stdout for tool calls
-5. Act on result (escalate or defer)
-6. Container exits, scratch discarded
-```
+The main agent edits this file directly. Changes take effect on the next triage — no restart needed. The main agent's CLAUDE.local.md tells it about this capability.
 
-### Tools available to input subagent
+### `extended.md` (deferred)
+Accumulated context, summarised before injection. Not yet implemented.
 
-| Tool | Actual behaviour | Agent knows? |
-|---|---|---|
-| `notify_user` | Spawns main agent fork | No — agent believes it notifies user directly |
-| `defer` | Appends to digest | Yes |
-| *(no action / timeout)* | Treated as implicit defer | N/A |
+---
 
-### Escalation payload (passed to fork via `notify_user`)
+## 5. Feed System
+
+Feeds are discovered from `mailman/feeds/*/feed.json` at startup. Each directory can optionally contain a `prompt.md` with feed-specific triage guidance appended to the subagent's system prompt.
+
+All feeds write to a single shared Maildir inbox (`mailman/inbox/new/`). The inbox watcher is feed-agnostic — it reads the `X-Mailman-Source` header to load the feed-specific prompt.
+
+### Feed Types
+
+| Type | Handler | Auth | Change detection | Polling |
+|------|---------|------|-----------------|---------|
+| `gmail` | `gmail-api.ts` | OneCLI OAuth | Gmail API `is:unread` query | Flat interval (default 20min) |
+| `gcal` | `gcal-api.ts` | OneCLI OAuth | API `updatedMin` parameter | Tiered (see below) |
+| `ics` | `ics-feed.ts` | Plain HTTP URL | Snapshot hash diffing | Tiered (see below) |
+
+### feed.json Format
 
 ```json
 {
-  "subagent_summary": "Three failed delivery attempts, same carrier, 6-hour window",
-  "subagent_reasoning": "Pattern suggests lost package requiring user intervention",
-  "original_metadata": { "sender": "...", "timestamp": "...", "channel": "email" }
+  "type": "gmail | gcal | ics",
+  "agent_id": "mailman-<feed-name>",
+  "url": "https://...",
+  "poll_interval_s": 300,
+  "calendar_id": "primary",
+  "max_future_days": 30,
+  "max_past_days": 1,
+  "max_age_days": 3,
+  "query": "is:unread category:primary"
 }
 ```
 
-The fork evaluates the **claim**, not the raw message.
+Fields are type-specific. Unknown types log a warning and are skipped.
 
-### Triage framing
+### Tiered Calendar Polling
 
-The input subagent is instructed to invoke `notify_user` if **the user would regret knowing about or acting on the message until it is too late**. This frames the decision as "regret at missing" rather than "is this worthy" — a more tractable question for a cheap model with limited context.
+Calendar feeds (gcal, ics) use tiered polling — frequent for imminent events, infrequent for distant ones. All tiers offset by -2 minutes from clock boundaries to catch last-minute changes (someone cancels at 1:59, poll at :03 catches it).
 
----
+| Cadence | Lookahead | What it catches |
+|---------|-----------|----------------|
+| 5 minutes | 1 hour | Imminent changes |
+| 15 minutes | 24 hours | Today/tomorrow |
+| 1 hour | 3 days (ics) / 7 days (gcal) | This week |
+| Daily (midnight) | 14 days | Baseline sweep |
 
-## 6. Input Subagent: Stateful (Teams, Slack, Threaded Chat)
+### ICS Snapshot Diffing
 
-One persistent Claude Code session per thread. The thread is the unit of meaning.
+ICS feeds receive calendar snapshots, not change events. The system:
 
-### Lifecycle (managed by TypeScript service)
+1. **First run / midnight**: fetches ICS, expands recurring events (via `node-ical`) for 14 days, saves hashes as baseline. No notifications.
+2. **Tiered polls**: fetches ICS, expands for the tier's window, diffs hashes against baseline.
+   - Hash changed on known event → real change, emit
+   - New UID not in baseline → genuinely new, emit
+   - Event in baseline but missing from current → cancelled, emit
+   - Hash unchanged → skip
 
-```
-New message arrives for thread:
-  → thread JSONL exists? Append message + invoke
-  → thread JSONL absent? Write baseline + inject thread history + invoke
-
-Thread goes quiet (configurable TTL, default 24h):
-  → Summarise thread JSONL into closing note
-  → Archive
-  → Delete JSONL
-
-Thread context exceeds size threshold:
-  → Summarise early turns
-  → Replace with summary, retain recent N turns
-  → Continue
-```
-
-### Key difference from stateless
-
-The stateful agent accumulates turns. It is **not reset after each message**. It reasons about thread trajectory. "ok" in isolation is noise; "ok" after three people escalating an incident is signal.
+Events are hashed on meaningful fields (summary, start, end, location, status, attendees). Re-exports without real changes are silent.
 
 ---
 
-## 7. Digest
+## 6. Notification Delivery
 
-### Structure
+When the fork agrees an escalation is warranted:
 
-Deferred items are appended to a digest file. Each entry:
-
-```
-[2026-06-19T09:14Z] sender: noreply@carrier.com | channel: email
-  subject: Your package has been delayed
-  subagent-summary: Shipping delay notice, no action required.
-  subagent-confidence: defer
-
-[2026-06-19T11:03Z] sender: noreply@carrier.com | channel: email
-  subject: Delivery attempt failed
-  subagent-summary: Delivery failed, redelivery needed.
-  subagent-confidence: defer
-```
-
-Entries contain **subagent-processed metadata only** — original untrusted content is not stored in the digest. The trust boundary holds.
-
-### Cadence
-
-Digests are swept every **8 hours** — three sweeps per day. Long enough for within-digest patterns to accumulate; short enough to catch slow-burn escalations within a day.
+1. The agreed summary is appended to `mailman/state/main-context.jsonl`
+2. `notifyMainAgent()` writes a chat message into the target agent group's session (configured via `MAILMAN_AGENT_GROUP_ID`)
+3. The container is woken to process the notification
+4. The main agent decides how to notify the user via its configured channel
 
 ---
 
-## 8. Digest Sweep Agent
-
-### Role
-
-The sweep agent is a **pattern recogniser operating on a temporal slice**. Its job is distinct from the input subagent's job:
-
-- Input subagent: *Would DMJ regret missing this specific message?*
-- Sweep agent: *Does this collection, taken together, constitute something DMJ should know about?*
-
-### Context injected
+## 7. File Layout
 
 ```
-• Current digest (batched subagent summaries)
-• Previous sweep's findings + thematic summary (for cross-digest continuity)
-• intents.md
-• kernel.md (verbatim)
-• extended.md summary
-• User capsule
-```
-
-The previous sweep's findings slot is **present in the prompt template but empty at MVP**. Populate it in a later iteration.
-
-### Instruction framing
-
-- Treat the digest as a **corpus**, not a queue
-- Look for: accumulation, repetition, escalating urgency, thematic clustering
-- A single item that looks more significant in context is a valid escalation reason
-- Escalation justification must **name the pattern**, not re-summarise the item
-
-### Output: two distinct artifacts
-
-**1. Tool calls (during run) — one per synthesised finding**
-
-```json
-notify_user({
-  "finding": "Three failed delivery attempts, same carrier, 6-hour window",
-  "evidence": ["digest entry refs or subagent summaries"],
-  "reasoning": "Pattern suggests lost package requiring user intervention"
-})
-```
-
-Each tool call is independent. Multiple findings from one sweep = multiple independent forks. The sweep agent is forced to name each finding discretely before escalating — this prevents glob-escalation.
-
-**2. Thematic summary (produced after tool calls)**
-
-A structured closing statement: overarching themes, signal quality, notable absences, drift from recent norms. Appended to the archive alongside digest entries. Used by the next sweep agent as the "previous sweep" context.
-
-**Prompt engineering note:** The sweep agent must produce the thematic summary **after** emitting tool calls. Findings must be based on direct batch analysis; the summary reflects what was found rather than shaping what is found.
-
-### Model
-
-Run on a **different model from the input subagent**. Mid-tier preferred — pattern synthesis is harder than single-item triage. Model diversity is a defence property, not just a capability choice.
-
----
-
-## 9. Main Agent Fork
-
-### Purpose
-
-Evaluates a single escalation claim from either an input subagent or a digest sweep agent. Acts as a second opinion running on a different model from the input subagent.
-
-### Lifecycle (managed by TypeScript service)
-
-```
-1. cp main.jsonl fork.jsonl
-2. Append escalation payload to fork.jsonl
-3. Docker run: fork.jsonl RO, scratch RW
-4. Parse decision
-5a. If act/notify: append agreed summary as system message to main.jsonl; notify user
-5b. If disagree: log and discard
-6. Container exits, scratch discarded
-```
-
-The fork reflects the **current main agent state at moment of escalation**. It diverges from main only in the appended escalation payload. After the run it is discarded — no reconciliation needed.
-
-### Tool surface
-
-The fork's tool surface should be **restricted at MVP**: notify-capable, but not write/execute/send capable unless the main agent's live context countersigns. This limits the blast radius if an adversarial message survives the triage chain.
-
-### Context passed to fork
-
-```json
-{
-  "finding": "...",
-  "evidence": ["..."],
-  "subagent_reasoning": "...",
-  "source": "input_subagent | digest_sweep"
-}
-```
-
-The fork evaluates a claim with supporting evidence. It does not re-evaluate raw messages.
-
----
-
-## 10. Main Agent Context Updates
-
-When the fork agrees to act or notify:
-
-- A summary of the finding and actions taken is **appended as a system message** to `main.jsonl`
-- The main agent's live context is updated without the main agent having processed any untrusted input
-- The main agent is informed of outcomes, not inputs
-
----
-
-## 11. Subagent Registry (Configuration)
-
-A config file the TypeScript service reads to instantiate the correct subagent class per input source:
-
-```toml
-[subagents.email]
-class = "stateless"
-model = "claude-haiku-4-5"
-prompt = "prompts/email_triage.md"
-
-[subagents.teams]
-class = "stateful"
-model = "claude-haiku-4-5"
-prompt = "prompts/teams_triage.md"
-thread_ttl_hours = 24
-context_compress_threshold_tokens = 8000
-
-[subagents.digest_sweep]
-class = "stateless"
-model = "claude-sonnet-4-6"
-prompt = "prompts/digest_sweep.md"
-```
-
-Adding a new input type = adding a config block and a prompt file. No TypeScript orchestrator changes required.
-
----
-
-## 12. TypeScript Service Responsibilities
-
-The TypeScript service is the orchestrator. It owns:
-
-| Responsibility | Notes |
-|---|---|
-| Input source watching | Webhook endpoint, Maildir, etc. |
-| Container lifecycle | Spawn, collect stdout, discard |
-| Fork lifecycle | Write fork context, invoke, discard |
-| Digest file management | Append deferred items, archive after sweep |
-| 8-hour sweep cadence | Cron or interval |
-| Intent change notifications | Human-readable, delivered to user |
-| Thread TTL management | Archive and delete stale stateful agent state |
-| User notification delivery | Through existing NanoClaw channel adapters |
-
-Claude Code instances are **stateless subprocesses** from the service's perspective. The service does not depend on Claude Code specifically — any inference endpoint that consumes a context and emits structured tool calls is substitutable.
-
----
-
-## 13. File Layout (Proposed)
-
-```
-mailman/
+mailman/                           # On the mailman branch
   persona/
-    kernel.md
-    extended.md
-    intents.md
-    user-capsule.md
+    kernel.md                      # Core triage identity
+    intents.md                     # Main agent's standing directives
   prompts/
-    email_triage.md
-    digest_sweep.md
+    email_triage.md                # Triage subagent instructions
+    fork_eval.md                   # Fork evaluator instructions
+  feeds/                           # Per-feed config + prompts
+    gmail-personal/
+      feed.json
+      prompt.md                    # Optional feed-specific triage rules
+    gcal-work/
+      feed.json
+    ics-work/
+      feed.json
+      prompt.md
+  inbox/
+    new/                           # Incoming messages (all feeds write here)
+    cur/                           # Processed (with Maildir flags)
+    tmp/                           # In-flight (atomic write)
+  state/
+    main-context.jsonl             # Accumulated agreed escalations
+    gcal-seen-<feed>.json          # GCal dedup state
+    ics-snapshot-<feed>.json       # ICS baseline snapshots
   test-emails/
     *.eml
-  state/
-    main.jsonl
-    threads/
-      <thread-id>.jsonl
-  digests/
-    current.digest
-    archive/
-      <timestamp>.digest
-  logs/
-    intent-changes.log
-    triage.log
-src/
-  mailman/
-    subagent.ts
-    webhook.ts
+src/mailman/
+  spawn.ts                         # Shared container-spawn utility
+  sanitize.ts                      # Header trust + attachment stripping
+  subagent.ts                      # Triage subagent spawner
+  fork.ts                          # Fork evaluator (main agent snapshot)
+  notify.ts                        # Notification delivery to main agent
+  inbox-watcher.ts                 # Maildir watcher → triage → fork pipeline
+  webhook.ts                       # HTTP webhook handler
+  feeds.ts                         # Feed discovery and type dispatch
+  gmail-api.ts                     # Gmail API ingress
+  gcal-api.ts                      # Google Calendar API ingress
+  ics-feed.ts                      # ICS snapshot-diff ingress
+  maildir.ts                       # Shared Maildir writer for synthetic feeds
+```
+
+Skills (on `main` branch):
+```
+.claude/skills/
+  add-mailman/                     # Core pipeline install + config
+  add-mailman-gmail/               # Gmail feed setup
+  add-mailman-gcal/                # Google Calendar feed setup
+  add-mailman-ics/                 # ICS calendar feed setup
 ```
 
 ---
 
-## 14. Known Limitations and Deferred Work
+## 8. Installation Pattern
+
+Mailman source lives on the `mailman` branch, not trunk. Skills follow the NanoClaw fetch-and-copy pattern (same as `/add-discord`, `/add-telegram`):
+
+1. `/add-mailman` — fetches source from branch, wires into `src/index.ts`, configures target agent group, creates persona kernel, teaches main agent about intents.md
+2. `/add-mailman-gmail` — creates feed directory + `feed.json`, sets up OneCLI agent
+3. `/add-mailman-gcal` — same, walks through Google Calendar OAuth in OneCLI
+4. `/add-mailman-ics` — same, installs `node-ical` dependency, tests ICS URL accessibility
+
+---
+
+## 9. Known Limitations and Deferred Work
 
 | Item | Notes |
 |---|---|
-| Cross-digest pattern recognition | Sweep agent currently sees only current digest + previous sweep summary. Full historical pattern matching deferred. |
-| Fork tool surface | Restricted at MVP. Countersign mechanism for write/execute deferred. |
-| Persona summarisation quality | Cheap summariser may flatten nuance in `extended.md`. Validation step or deterministic template deferred. |
-| Intent change revert UX | Notifications are FYI at MVP. One-tap revert deferred. |
-| Sweep agent historical injection | Previous sweep slot exists in template but is empty at MVP. |
-| Model selection per subagent | Config-driven at MVP. Dynamic model routing (e.g. based on input volume or cost budget) deferred. |
+| Digest sweep agent | Batch pattern recognition across deferred items. Design exists, not implemented. |
+| Stateful/threaded agents | Per-thread JSONL for Teams/Slack channels. Design exists, not implemented. |
+| `extended.md` | Agent-writable accumulated persona context, summarised before injection. |
+| Intent change notifications | Currently silent. Design calls for human-readable notification on every change. |
+| Fork tool surface | No tools at all currently. Countersign mechanism for limited tool access deferred. |
 
 ---
 
-## 15. Design Principles
+## 10. Design Principles
 
 - **Tiny and reason-able.** Each component does one thing and its behaviour is legible.
-- **Fail loudly.** A compromised fork that disagrees with itself terminates. Silent failures are not acceptable.
-- **Security through architecture.** Trust boundaries are structural, not policy-based. Untrusted content cannot reach the main agent context by construction.
-- **Model diversity as defence.** Input subagent and fork run on different models. A prompt injection that works universally across models is harder to construct than one targeting a single model.
-- **Substitutability.** Claude Code is a convenient subprocess, not a load-bearing dependency. The orchestrator is model-agnostic.
-- **Container isolation.** Subagents run in Docker with minimal mounts. No host filesystem, no credentials unless explicitly granted.
+- **Feed-agnostic pipeline.** All feeds write RFC822-ish messages to one Maildir inbox. Triage is source-blind. New feed types need one handler function and a `feed.json` entry.
+- **Security through architecture.** Trust boundaries are structural, not policy-based. Untrusted content cannot reach the main agent context by construction. Header trust is enforced by the sanitizer, not by hoping the model ignores spoofed headers.
+- **Fork is the main agent.** The fork evaluator has the same context, model, and priorities as the main agent. It knows what the user is working on and who matters to them this week.
+- **Prompt cache friendly.** The fork's system prompt (CLAUDE.md + transcript) changes slowly. Multiple triage calls in the same window share the cached prefix.
+- **Container isolation.** Subagents run in Docker with no tools, no host filesystem access, no credentials. OneCLI egress proxy applies API keys on egress.
+- **Ponytail.** Flat JSON files for state, a plain Record for the feed registry, no abstractions ahead of need. `// ponytail:` comments mark deliberate shortcuts.
