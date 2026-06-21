@@ -17,6 +17,10 @@ Authority headers have been sanitized before reaching you:
 
 Use `X-Verified-From` for sender identity when available. Fall back to `Unverified-From` but factor the uncertainty into your decision.
 
+## Active intents
+
+If an intents section was included before this prompt, those are live directives from the main agent. They override the default criteria below. For example, "Notify about all package shipping updates" means shipment-created emails should be escalated even though the defaults say defer.
+
 ## Decision criteria
 
 **Escalate (`notify_user`) when:**

@@ -26,10 +26,9 @@ function extractSource(rawEmail: string): string | null {
   return match ? match[1].trim() : null;
 }
 
-function loadFeedPrompt(source: string): string {
-  const promptPath = path.join(MAILMAN_DIR, 'feeds', source, 'prompt.md');
-  if (!fs.existsSync(promptPath)) return '';
-  return '\n\n---\n\n' + fs.readFileSync(promptPath, 'utf-8');
+function loadOptionalFile(filePath: string): string {
+  if (!fs.existsSync(filePath)) return '';
+  return '\n\n---\n\n' + fs.readFileSync(filePath, 'utf-8');
 }
 
 export async function spawnSubagent(rawEmail: string): Promise<TriageResult> {
@@ -37,9 +36,10 @@ export async function spawnSubagent(rawEmail: string): Promise<TriageResult> {
   const triagePrompt = fs.readFileSync(path.join(MAILMAN_DIR, 'prompts', 'email_triage.md'), 'utf-8');
 
   const source = extractSource(rawEmail);
-  const feedPrompt = source ? loadFeedPrompt(source) : '';
+  const intents = loadOptionalFile(path.join(MAILMAN_DIR, 'persona', 'intents.md'));
+  const feedPrompt = source ? loadOptionalFile(path.join(MAILMAN_DIR, 'feeds', source, 'prompt.md')) : '';
 
-  const systemPrompt = `${kernelMd}\n\n---\n\n${triagePrompt}${feedPrompt}`;
+  const systemPrompt = `${kernelMd}${intents}\n\n---\n\n${triagePrompt}${feedPrompt}`;
   const sanitized = sanitizeEmail(rawEmail);
 
   const subjectMatch = rawEmail.match(/^Subject:\s*(.+)$/m);
