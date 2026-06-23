@@ -7,7 +7,7 @@ import { ChildProcess, execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { OneCLI } from '@onecli-sh/sdk';
+import os from 'os';
 
 import {
   CONTAINER_IMAGE,
@@ -15,8 +15,6 @@ import {
   CONTAINER_INSTALL_LABEL,
   DATA_DIR,
   GROUPS_DIR,
-  ONECLI_API_KEY,
-  ONECLI_URL,
   TIMEZONE,
 } from './config.js';
 import { materializeContainerJson } from './container-config.js';
@@ -49,7 +47,72 @@ import {
 } from './session-manager.js';
 import type { AgentGroup, Session } from './types.js';
 
-const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
+const ONECLI_LOCAL_URL = 'http://127.0.0.1:10254';
+
+interface OneCLIContainerConfig {
+  env: Record<string, string>;
+  caCertificate: string;
+  caCertificateContainerPath: string;
+  credentialStubs?: Array<{ containerPath: string; content: string }>;
+}
+
+async function onecliEnsureAgent(name: string, identifier: string): Promise<void> {
+  const url = `${ONECLI_LOCAL_URL}/api/agents`;
+  const existing = await fetch(url);
+  if (existing.ok) {
+    const agents = (await existing.json()) as Array<{ identifier: string | null }>;
+    if (agents.some((a) => a.identifier === identifier)) return;
+  }
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, identifier, secretMode: 'all' }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`OneCLI ensureAgent failed (${res.status}): ${body}`);
+  }
+}
+
+async function onecliGetContainerConfig(agent: string): Promise<OneCLIContainerConfig> {
+  const url = `${ONECLI_LOCAL_URL}/api/container-config?agent=${encodeURIComponent(agent)}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`OneCLI container-config failed (${res.status}): ${body}`);
+  }
+  return res.json() as Promise<OneCLIContainerConfig>;
+}
+
+function applyOneCLIContainerConfig(args: string[], config: OneCLIContainerConfig): void {
+  for (const [key, value] of Object.entries(config.env)) {
+    args.push('-e', `${key}=${value}`);
+  }
+
+  const caPath = path.join(os.tmpdir(), `onecli-ca-${Date.now()}.pem`);
+  fs.writeFileSync(caPath, config.caCertificate);
+  args.push('-v', `${caPath}:${config.caCertificateContainerPath}:ro`);
+
+  // Combined CA bundle for tools that need SSL_CERT_FILE
+  try {
+    const systemCa = fs.readFileSync('/etc/ssl/cert.pem', 'utf-8');
+    const combinedPath = path.join(os.tmpdir(), `onecli-combined-ca-${Date.now()}.pem`);
+    fs.writeFileSync(combinedPath, systemCa + '\n' + config.caCertificate);
+    args.push('-e', 'SSL_CERT_FILE=/tmp/onecli-combined-ca.pem');
+    args.push('-e', 'DENO_CERT=/tmp/onecli-combined-ca.pem');
+    args.push('-v', `${combinedPath}:/tmp/onecli-combined-ca.pem:ro`);
+  } catch {
+    // No system CA bundle available — single cert only
+  }
+
+  if (config.credentialStubs?.length) {
+    for (const stub of config.credentialStubs) {
+      const stubPath = path.join(os.tmpdir(), `onecli-stub-${path.basename(stub.containerPath)}`);
+      fs.writeFileSync(stubPath, stub.content);
+      args.push('-v', `${stubPath}:${stub.containerPath}:ro`);
+    }
+  }
+}
 
 /** Active containers tracked by session ID. */
 const activeContainers = new Map<string, { process: ChildProcess; containerName: string }>();
@@ -481,12 +544,10 @@ async function buildContainerArgs(
   // the throw, leaves the inbound message pending, and the next sweep tick
   // retries.
   if (agentIdentifier) {
-    await onecli.ensureAgent({ name: agentGroup.name, identifier: agentIdentifier });
+    await onecliEnsureAgent(agentGroup.name, agentIdentifier);
   }
-  const onecliApplied = await onecli.applyContainerConfig(args, { addHostMapping: false, agent: agentIdentifier });
-  if (!onecliApplied) {
-    throw new Error('OneCLI gateway not applied — refusing to spawn container without credentials');
-  }
+  const onecliConfig = await onecliGetContainerConfig(agentIdentifier || '');
+  applyOneCLIContainerConfig(args, onecliConfig);
   log.info('OneCLI gateway applied', { containerName });
 
   // Per-agent-group env overrides (file-only field in container.json).

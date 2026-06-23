@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@chat-adapter/telegram':
+        specifier: 4.27.0
+        version: 4.27.0
       '@clack/core':
         specifier: ^1.2.0
         version: 1.2.0
@@ -21,14 +24,17 @@ importers:
         specifier: 11.10.0
         version: 11.10.0
       chat:
-        specifier: ^4.24.0
-        version: 4.26.0
+        specifier: ^4.27.0
+        version: 4.27.0
       cron-parser:
         specifier: 5.5.0
         version: 5.5.0
       kleur:
         specifier: ^4.1.5
         version: 4.1.5
+      undici:
+        specifier: 8.5.0
+        version: 8.5.0
     devDependencies:
       '@eslint/js':
         specifier: ^9.35.0
@@ -68,6 +74,12 @@ importers:
         version: 4.1.4(@types/node@22.19.17)(vite@8.0.8(@types/node@22.19.17)(esbuild@0.27.7)(tsx@4.21.0))
 
 packages:
+
+  '@chat-adapter/shared@4.27.0':
+    resolution: {integrity: sha512-Wz+YZ8Mp2/qcxxJ+rU0ofZQSEtOF/4toEh7wbA+q+uLlPrLue+7hImWluJpQUZqGjSwsUoXhjSNwgFv3hz20aQ==}
+
+  '@chat-adapter/telegram@4.27.0':
+    resolution: {integrity: sha512-taRZAPw5Sw7G4BtsGCIV5QqaXrKUlmLWoX04NZxGUC0Gn7MuYPwh7P7wMk04LvQ2lZfhjVCr22UlvayloUPSfg==}
 
   '@clack/core@1.2.0':
     resolution: {integrity: sha512-qfxof/3T3t9DPU/Rj3OmcFyZInceqj/NVtO9rwIuJqCUgh32gwPjpFQQp/ben07qKlhpwq7GzfWpST4qdJ5Drg==}
@@ -609,8 +621,8 @@ packages:
   character-entities@2.0.2:
     resolution: {integrity: sha512-shx7oQ0Awen/BRIdkjkvz54PnEEI/EjwXDSIZp86/KKdbafHh1Df/RYGBhn4hbe2+uKC9FnT5UCEdyPz3ai9hQ==}
 
-  chat@4.26.0:
-    resolution: {integrity: sha512-QToDnIEGpyb8yQA6YLMHOSRK30YVk4RtsyFyuWFYyB2c4jQlyIrSWtwVK7qyvmvqzQp9uDwCdJRAhS8GtCHAGQ==}
+  chat@4.27.0:
+    resolution: {integrity: sha512-PrL4k263DSIlckhX8eHLT84RdTSznOBxCCfaDc5JVJtWaS0lJkCNctm/g3gIrI41AcDHcpc/3WDoUHVrbh0W4w==}
 
   chownr@1.1.4:
     resolution: {integrity: sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg==}
@@ -1356,6 +1368,10 @@ packages:
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
 
+  undici@8.5.0:
+    resolution: {integrity: sha512-xamtWoB1EshgjpmlXd7GGm2VfdDtw1+rD8uhry8pSNW3If6S8E0m2T2+orSKeZXEn/aPJMviCpDBA65WJt8zhg==}
+    engines: {node: '>=22.19.0'}
+
   unified@11.0.5:
     resolution: {integrity: sha512-xKvGhPWw3k84Qjh8bI3ZeJjqnyadK+GEFtazSfZv/rKeTkTjOJho6mFqh2SM96iIcZokxiOpg78GazTSg8+KHA==}
 
@@ -1492,6 +1508,19 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  '@chat-adapter/shared@4.27.0':
+    dependencies:
+      chat: 4.27.0
+    transitivePeerDependencies:
+      - supports-color
+
+  '@chat-adapter/telegram@4.27.0':
+    dependencies:
+      '@chat-adapter/shared': 4.27.0
+      chat: 4.27.0
+    transitivePeerDependencies:
+      - supports-color
 
   '@clack/core@1.2.0':
     dependencies:
@@ -1963,7 +1992,7 @@ snapshots:
 
   character-entities@2.0.2: {}
 
-  chat@4.26.0:
+  chat@4.27.0:
     dependencies:
       '@workflow/serde': 4.1.0-beta.2
       mdast-util-to-string: 4.0.0
@@ -2874,6 +2903,8 @@ snapshots:
   typescript@5.9.3: {}
 
   undici-types@6.21.0: {}
+
+  undici@8.5.0: {}
 
   unified@11.0.5:
     dependencies:
