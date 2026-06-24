@@ -8,7 +8,7 @@
 import { getInboundDb } from '../db/connection.js';
 import { writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting } from '../db/session-routing.js';
-import { TIMEZONE, parseZonedToUtc } from '../timezone.js';
+import { TIMEZONE, formatLocalTime, parseZonedToUtc } from '../timezone.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 
@@ -95,8 +95,9 @@ export const scheduleTask: McpToolDefinition = {
       }),
     });
 
-    log(`schedule_task: ${id} at ${processAfter}${recurrence ? ` (recurring: ${recurrence})` : ''}`);
-    return ok(`Task scheduled (id: ${id}, runs at: ${processAfter}${recurrence ? `, recurrence: ${recurrence}` : ''})`);
+    const localTime = formatLocalTime(processAfter, TIMEZONE);
+    log(`schedule_task: ${id} at ${localTime} (${processAfter})`);
+    return ok(`Task scheduled (id: ${id}, runs at: ${localTime}${recurrence ? `, recurrence: ${recurrence}` : ''})`);
   },
 };
 
@@ -151,7 +152,8 @@ export const listTasks: McpToolDefinition = {
     const lines = (rows as Array<{ id: string; status: string; process_after: string | null; recurrence: string | null; content: string }>).map((r) => {
       const content = JSON.parse(r.content);
       const prompt = (content.prompt as string || '').slice(0, 80);
-      return `- ${r.id} [${r.status}] at=${r.process_after || 'now'} ${r.recurrence ? `recur=${r.recurrence} ` : ''}→ ${prompt}`;
+      const localAt = r.process_after ? formatLocalTime(r.process_after, TIMEZONE) : 'now';
+      return `- ${r.id} [${r.status}] at=${localAt} ${r.recurrence ? `recur=${r.recurrence} ` : ''}→ ${prompt}`;
     });
 
     return ok(lines.join('\n'));
