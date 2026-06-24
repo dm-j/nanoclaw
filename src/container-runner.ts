@@ -521,7 +521,16 @@ async function buildContainerArgs(
 
   // Environment — only vars read by code we don't own.
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
-  args.push('-e', `TZ=${TIMEZONE}`);
+  // Per-group timezone override — the agent can update .timezone to handle travel
+  const groupTzFile = path.join(GROUPS_DIR, agentGroup.folder, '.timezone');
+  let tz = TIMEZONE;
+  try {
+    const groupTz = fs.readFileSync(groupTzFile, 'utf-8').trim();
+    if (groupTz) tz = groupTz;
+  } catch {
+    // No per-group override — use global
+  }
+  args.push('-e', `TZ=${tz}`);
 
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {
