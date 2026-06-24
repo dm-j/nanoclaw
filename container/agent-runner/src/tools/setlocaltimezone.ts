@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 /**
- * setlocaldatetime — update the agent's timezone.
+ * setlocaltimezone — update the agent's timezone.
  *
  * Usage:
- *   setlocaldatetime America/New_York
- *   setlocaldatetime --list         # show common timezones
- *   setlocaldatetime --current      # show current setting
+ *   setlocaltimezone America/New_York
+ *   setlocaltimezone --list         # show common timezones
+ *   setlocaltimezone --current      # show current setting
  */
 
 import fs from 'fs';
@@ -24,9 +24,9 @@ function isValidTimezone(tz: string): boolean {
 
 if (!args[0] || args[0] === '--help' || args[0] === '-h') {
   console.log(`Usage:
-  setlocaldatetime <timezone>    Set the agent's local timezone (e.g. America/New_York)
-  setlocaldatetime --current     Show current timezone setting
-  setlocaldatetime --list        Show common timezone names
+  setlocaltimezone <timezone>    Set the agent's local timezone (e.g. America/New_York)
+  setlocaltimezone --current     Show current timezone setting
+  setlocaltimezone --list        Show common timezone names
 
 The change writes to .timezone but does NOT take effect until
 the container restarts. Request a restart after calling this.`);
@@ -65,7 +65,7 @@ const newTz = args[0];
 if (!isValidTimezone(newTz)) {
   console.error(`Invalid timezone: ${newTz}`);
   console.error('Use IANA timezone names (e.g. America/New_York, Europe/London, Asia/Tokyo)');
-  console.error('Run "setlocaldatetime --list" for common options.');
+  console.error('Run "setlocaltimezone --list" for common options.');
   process.exit(1);
 }
 
