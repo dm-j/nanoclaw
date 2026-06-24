@@ -420,6 +420,18 @@ export function buildMounts(
     mounts.push({ hostPath: skillsSrc, containerPath: '/app/skills', readonly: true });
   }
 
+  // Memsearch stub — relays CLI calls to the host services proxy
+  const memsearchStub = path.join(projectRoot, 'container', 'memsearch-stub', 'memsearch');
+  if (fs.existsSync(memsearchStub)) {
+    mounts.push({ hostPath: memsearchStub, containerPath: '/usr/local/bin/memsearch', readonly: true });
+  }
+
+  // Memsearch ccplugin — hooks for memory capture and search
+  const memsearchPlugin = path.join(projectRoot, 'container', 'plugins', 'memsearch');
+  if (fs.existsSync(memsearchPlugin)) {
+    mounts.push({ hostPath: memsearchPlugin, containerPath: '/app/memsearch-plugin', readonly: true });
+  }
+
   // Additional mounts from container config
   if (containerConfig.additionalMounts && containerConfig.additionalMounts.length > 0) {
     const validated = validateAdditionalMounts(containerConfig.additionalMounts, agentGroup.name);

@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS_JSON =
         CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
         CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+        MEMSEARCH_DIR: '/workspace/agent/.memsearch',
       },
       hooks: {
         PreCompact: [
@@ -22,6 +23,29 @@ const DEFAULT_SETTINGS_JSON =
               {
                 type: 'command',
                 command: 'bun /app/src/compact-instructions.ts',
+              },
+            ],
+          },
+        ],
+        Stop: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: 'bash /app/memsearch-plugin/hooks/stop.sh',
+                async: true,
+                timeout: 120,
+              },
+            ],
+          },
+        ],
+        SessionStart: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: 'bash /app/memsearch-plugin/hooks/session-start.sh',
+                timeout: 10,
               },
             ],
           },
@@ -125,6 +149,7 @@ export function initGroupFilesystem(
     } else {
       ensurePreCompactHook(settingsFile, initialized);
     }
+    ensureMemsearchHooks(settingsFile, initialized);
 
     // Skills directory — created empty here; symlinks are synced at spawn
     // time by container-runner.ts based on container.json skills selection.
@@ -146,6 +171,8 @@ export function initGroupFilesystem(
 }
 
 const PRE_COMPACT_COMMAND = 'bun /app/src/compact-instructions.ts';
+const MEMSEARCH_STOP_COMMAND = 'bash /app/memsearch-plugin/hooks/stop.sh';
+const MEMSEARCH_SESSION_START_COMMAND = 'bash /app/memsearch-plugin/hooks/session-start.sh';
 
 /**
  * Patch an existing settings.json to add the PreCompact hook if missing.
@@ -171,5 +198,47 @@ function ensurePreCompactHook(settingsFile: string, initialized: string[]): void
     initialized.push('settings.json (added PreCompact hook)');
   } catch {
     // Don't break init if settings.json is malformed — it'll use whatever's there.
+  }
+}
+
+function ensureMemsearchHooks(settingsFile: string, initialized: string[]): void {
+  try {
+    const raw = fs.readFileSync(settingsFile, 'utf-8');
+    const settings = JSON.parse(raw);
+    let changed = false;
+
+    if (!settings.hooks) settings.hooks = {};
+    if (!settings.env) settings.env = {};
+
+    // MEMSEARCH_DIR env var — scopes hooks to the agent group's memory
+    if (!settings.env.MEMSEARCH_DIR) {
+      settings.env.MEMSEARCH_DIR = '/workspace/agent/.memsearch';
+      changed = true;
+    }
+
+    // Stop hook — summarize and save memory after each turn
+    if (!JSON.stringify(settings.hooks.Stop ?? []).includes(MEMSEARCH_STOP_COMMAND)) {
+      if (!settings.hooks.Stop) settings.hooks.Stop = [];
+      settings.hooks.Stop.push({
+        hooks: [{ type: 'command', command: MEMSEARCH_STOP_COMMAND, async: true, timeout: 120 }],
+      });
+      changed = true;
+    }
+
+    // SessionStart hook — search for relevant context
+    if (!JSON.stringify(settings.hooks.SessionStart ?? []).includes(MEMSEARCH_SESSION_START_COMMAND)) {
+      if (!settings.hooks.SessionStart) settings.hooks.SessionStart = [];
+      settings.hooks.SessionStart.push({
+        hooks: [{ type: 'command', command: MEMSEARCH_SESSION_START_COMMAND, timeout: 10 }],
+      });
+      changed = true;
+    }
+
+    if (changed) {
+      fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+      initialized.push('settings.json (added memsearch hooks)');
+    }
+  } catch {
+    // Don't break init if settings.json is malformed
   }
 }
