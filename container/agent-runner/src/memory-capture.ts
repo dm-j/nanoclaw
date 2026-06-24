@@ -159,9 +159,10 @@ export function captureMemoryTurn(sessionId: string | undefined, assistantName =
     return;
   }
 
-  // Re-index in the background. Failures are logged but don't block the turn.
+  // Re-index in the background. Use --force because we just appended new content.
+  // Failures are logged but don't block the turn.
   try {
-    const proc = spawn('memsearch', ['index', MEMORY_DIR, '--milvus-uri', MILVUS_URI], {
+    const proc = spawn('memsearch', ['index', MEMORY_DIR, '--milvus-uri', MILVUS_URI, '--force'], {
       stdio: 'ignore',
       detached: true,
     });
