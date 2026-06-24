@@ -11,7 +11,13 @@ if [ ! -t 0 ]; then
   STDIN_DATA=$(cat)
 fi
 
+AUTH_HEADER=()
+if [ -n "${NANOCLAW_SERVICE_TOKEN:-}" ]; then
+  AUTH_HEADER=(-H "Authorization: Bearer ${NANOCLAW_SERVICE_TOKEN}")
+fi
+
 exec curl -sf "http://memsearch.internal/cli" \
   -H "Content-Type: application/x-www-form-urlencoded" \
+  "${AUTH_HEADER[@]}" \
   --data-urlencode "args=$*" \
   --data-urlencode "stdin=$STDIN_DATA"

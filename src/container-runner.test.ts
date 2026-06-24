@@ -40,7 +40,7 @@ describe('buildContainerArgs ordering invariant (structural)', () => {
   it('applies the OneCLI gateway after the volume mounts', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src', 'container-runner.ts'), 'utf-8');
     const mountsLoop = src.indexOf('for (const mount of mounts)');
-    const gatewayApply = src.indexOf('onecli.applyContainerConfig');
+    const gatewayApply = src.indexOf('applyOneCLIContainerConfig(args, onecliConfig)');
     expect(mountsLoop).toBeGreaterThan(-1);
     expect(gatewayApply).toBeGreaterThan(-1);
     expect(gatewayApply).toBeGreaterThan(mountsLoop);
@@ -58,5 +58,19 @@ describe('container boot-failure tripwire (structural)', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src', 'container-runner.ts'), 'utf-8');
     expect(src).toContain('stderrTail.push(line)');
     expect(src).toMatch(/Container exited non-zero.*stderrTail/s);
+  });
+});
+
+describe('service token wiring (structural)', () => {
+  // macOS Docker Desktop NATs container-to-host traffic to 127.0.0.1, so the
+  // host services proxy cannot identify callers by IP. A per-container service
+  // token must be generated at spawn, registered with the proxy, and injected
+  // into the container env so the memsearch stub can authenticate.
+  it('generates, registers, and injects a service token', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src', 'container-runner.ts'), 'utf-8');
+    expect(src).toContain('crypto.randomBytes(32).toString(\'base64url\')');
+    expect(src).toContain('registerServiceToken(serviceToken, agentGroup.id, session.id)');
+    expect(src).toContain('NANOCLAW_SERVICE_TOKEN=${serviceToken}');
+    expect(src).toContain('revokeServiceToken(serviceToken)');
   });
 });

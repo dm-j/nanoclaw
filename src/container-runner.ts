@@ -4,6 +4,7 @@
  * The container runs the v2 agent-runner which polls the session DB.
  */
 import { ChildProcess, execSync, spawn } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -45,6 +46,7 @@ import {
   sessionDir,
   writeSessionRouting,
 } from './session-manager.js';
+import { registerServiceToken, revokeServiceToken } from './host-services-proxy.js';
 import type { AgentGroup, Session } from './types.js';
 
 const ONECLI_LOCAL_URL = 'http://127.0.0.1:10254';
@@ -125,7 +127,10 @@ function applyOneCLIContainerConfig(args: string[], config: OneCLIContainerConfi
 }
 
 /** Active containers tracked by session ID. */
-const activeContainers = new Map<string, { process: ChildProcess; containerName: string }>();
+const activeContainers = new Map<
+  string,
+  { process: ChildProcess; containerName: string; serviceToken: string }
+>();
 
 /**
  * In-flight wake promises, keyed by session id. Deduplicates concurrent
@@ -215,6 +220,11 @@ async function spawnContainer(session: Session): Promise<void> {
 
   const mounts = buildMounts(agentGroup, session, containerConfig, provider, contribution);
   const containerName = `nanoclaw-v2-${agentGroup.folder}-${Date.now()}`;
+  // Per-container service token: lets the host services proxy identify this
+  // container on macOS Docker Desktop, where container-to-host traffic is NATed
+  // to 127.0.0.1 and IP-based identity resolution fails.
+  const serviceToken = crypto.randomBytes(32).toString('base64url');
+  registerServiceToken(serviceToken, agentGroup.id, session.id);
   // OneCLI agent identifier is always the agent group id — stable across
   // sessions and reversible via getAgentGroup() for approval routing.
   const agentIdentifier = agentGroup.id;
@@ -226,6 +236,7 @@ async function spawnContainer(session: Session): Promise<void> {
     provider,
     contribution,
     agentIdentifier,
+    serviceToken,
   );
 
   log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
@@ -238,7 +249,7 @@ async function spawnContainer(session: Session): Promise<void> {
 
   const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
-  activeContainers.set(session.id, { process: container, containerName });
+  activeContainers.set(session.id, { process: container, containerName, serviceToken });
   markContainerRunning(session.id);
 
   // Log stderr. A container that dies at boot (unknown provider, missing
@@ -266,6 +277,7 @@ async function spawnContainer(session: Session): Promise<void> {
     activeContainers.delete(session.id);
     markContainerStopped(session.id);
     stopTypingRefresh(session.id);
+    revokeServiceToken(serviceToken);
     // code null = killed by signal (normal shutdown path), not a boot failure.
     if (code !== 0 && code !== null && stderrTail.length > 0) {
       log.warn('Container exited non-zero', { sessionId: session.id, code, containerName, stderrTail });
@@ -278,6 +290,7 @@ async function spawnContainer(session: Session): Promise<void> {
     activeContainers.delete(session.id);
     markContainerStopped(session.id);
     stopTypingRefresh(session.id);
+    revokeServiceToken(serviceToken);
     log.error('Container spawn error', { sessionId: session.id, err });
   });
 }
@@ -516,6 +529,7 @@ async function buildContainerArgs(
   _provider: string,
   providerContribution: ProviderContainerContribution,
   agentIdentifier?: string,
+  serviceToken?: string,
 ): Promise<string[]> {
   const args: string[] = ['run', '--rm', '--name', containerName, '--label', CONTAINER_INSTALL_LABEL];
 
@@ -531,6 +545,12 @@ async function buildContainerArgs(
     // No per-group override — use global
   }
   args.push('-e', `TZ=${tz}`);
+
+  // Service token: lets the host services proxy identify this container even
+  // when Docker Desktop NATs the connection to 127.0.0.1. Never logged.
+  if (serviceToken) {
+    args.push('-e', `NANOCLAW_SERVICE_TOKEN=${serviceToken}`);
+  }
 
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {

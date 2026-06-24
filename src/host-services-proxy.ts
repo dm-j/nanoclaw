@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import http from 'http';
 import net from 'net';
 import { URL } from 'url';
@@ -7,7 +8,9 @@ import { CONTAINER_INSTALL_LABEL } from './config.js';
 import { log } from './log.js';
 
 // ponytail: plain HTTP for .internal services, no TLS termination needed.
-// The container stub uses http://memsearch.internal/... via HTTP_PROXY.
+// The container stub uses http://memsearch.internal/... directly; we identify
+// the caller by a per-container service token (macOS Docker Desktop NATs all
+// container-to-host traffic to 127.0.0.1, making IP-based resolution impossible).
 // External traffic still goes HTTPS through OneCLI via CONNECT tunnels.
 
 const INTERNAL_TLD = '.internal';
@@ -24,7 +27,34 @@ export function registerHostService(hostname: string, service: ServiceHandler): 
   log.info('Host service registered', { hostname });
 }
 
-// --- Agent identity from container IP ---
+// --- Agent identity from per-container service token ---
+
+interface TokenRecord {
+  agentGroupId: string;
+  sessionId: string;
+  createdAt: number;
+}
+
+const serviceTokens = new Map<string, TokenRecord>();
+
+export function registerServiceToken(token: string, agentGroupId: string, sessionId: string): void {
+  serviceTokens.set(token, { agentGroupId, sessionId, createdAt: Date.now() });
+}
+
+export function revokeServiceToken(token: string): void {
+  serviceTokens.delete(token);
+}
+
+function resolveAgentByToken(req: http.IncomingMessage): string | null {
+  const auth = req.headers.authorization ?? '';
+  const match = /^Bearer\s+(\S+)$/i.exec(auth);
+  if (!match) return null;
+  const token = match[1];
+  const record = serviceTokens.get(token);
+  return record ? record.agentGroupId : null;
+}
+
+// --- Agent identity from container IP (fallback) ---
 
 const ipToAgentGroup = new Map<string, string>();
 
@@ -114,12 +144,26 @@ export function startHostServicesProxy(port: number): void {
       return;
     }
 
-    const remoteIp = getRemoteIp(req);
-    const agentGroupId = await resolveAgent(remoteIp);
+    // Prefer the per-container service token (required on macOS Docker Desktop
+    // because NAT hides the real container IP). Fall back to IP resolution for
+    // Linux and legacy/manual callers.
+    let agentGroupId = resolveAgentByToken(req);
+    let identitySource = 'token';
     if (!agentGroupId) {
+      const remoteIp = getRemoteIp(req);
+      agentGroupId = await resolveAgent(remoteIp);
+      identitySource = 'ip';
+    }
+    if (!agentGroupId) {
+      const remoteIp = getRemoteIp(req);
       log.warn('Host services proxy: unknown caller', { remoteIp, service: serviceName });
       res.writeHead(403).end('Unknown caller');
       return;
+    }
+    if (identitySource === 'token') {
+      log.info('Host services proxy: caller identified by service token', { service: serviceName, agentGroupId });
+    } else {
+      log.debug('Host services proxy: resolved caller by IP', { service: serviceName, remoteIp: getRemoteIp(req), agentGroupId });
     }
 
     try {
@@ -188,4 +232,6 @@ export function stopHostServicesProxy(): void {
     server = null;
     log.info('Host services proxy stopped');
   }
+  serviceTokens.clear();
+  ipToAgentGroup.clear();
 }
