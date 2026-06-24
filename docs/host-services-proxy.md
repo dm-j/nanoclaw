@@ -81,36 +81,132 @@ Nothing — this is strictly additive. The default route is OneCLI pass-through,
 
 ---
 
-## 5. Adding a new host service
+## 5. Agent identity (network-based, unforgeable)
 
-A handler is a function that receives an HTTP request and returns a response. Registration:
+The proxy must know which agent group is making a request — without trusting anything in the request itself. Headers, cookies, and query parameters are all forgeable by a compromised container.
+
+### Identity from the network layer
+
+Each container has a unique IP on the Docker bridge network. The container cannot forge its source IP. The proxy resolves identity via:
+
+```
+Incoming request from 172.17.0.5
+  → Docker API: which container has this IP?
+  → Container name: nanoclaw-v2-dm-with-dmj-1719100000
+  → Parse folder from name: dm-with-dmj
+  → DB lookup: folder → agent_group_id
+  → Identity: ag-1781738004490-2axf9a
+```
+
+### Implementation
+
+The proxy maintains a **container IP → agent group** cache, refreshed on:
+- Container spawn (the proxy is in-process with the host, so it can hook `wakeContainer`)
+- Cache miss (query Docker API on demand)
+- Container exit (invalidate entry)
 
 ```typescript
-// In the proxy's handler registry
-registerService('memsearch.internal', async (req) => {
-  // Parse the request, run local logic, return response
+// ponytail: Map, not a class. Refresh on miss.
+const ipToAgentGroup = new Map<string, string>();
+
+async function resolveAgent(remoteIp: string): Promise<string | null> {
+  if (ipToAgentGroup.has(remoteIp)) return ipToAgentGroup.get(remoteIp)!;
+
+  // Cache miss — query Docker
+  const containers = await docker.listContainers({ filters: { label: [CONTAINER_INSTALL_LABEL] } });
+  for (const c of containers) {
+    const ip = c.NetworkSettings?.Networks?.bridge?.IPAddress;
+    const folder = parseFolderFromName(c.Names[0]); // nanoclaw-v2-<folder>-<timestamp>
+    if (ip && folder) {
+      const group = getAgentGroupByFolder(folder);
+      if (group) ipToAgentGroup.set(ip, group.id);
+    }
+  }
+
+  return ipToAgentGroup.get(remoteIp) ?? null;
+}
+```
+
+### Container restarts and IP reuse
+
+Container names include a timestamp and change on every spawn. This doesn't affect identity — the cache is keyed by IP, not name. The Docker API query always returns the *current* container at that IP.
+
+When a container exits, the host invalidates its cache entry (the `onExit` callback in `container-runner.ts` already fires on container death). This prevents stale entries from matching a new container that Docker assigns the same IP.
+
+### What happens when identity fails
+
+- **Unknown IP (not a NanoClaw container):** Request rejected. 403, no forwarding, not even to OneCLI.
+- **Known IP, no ACL for requested service:** Request rejected. 403 with reason: "agent group X not authorized for service Y".
+- **Known IP, authorized:** Request proceeds to handler with agent group ID available.
+
+### Non-container callers
+
+Requests not from a container IP (e.g. from the host itself, localhost) are rejected by default. If the host process needs to call a service handler directly, it calls the handler function in-process — not via HTTP.
+
+---
+
+## 6. Service ACLs
+
+Each service declares which agent groups can access it. Default: none (deny-all).
+
+```typescript
+registerService('memsearch.internal', {
+  handler: async (req, agentGroupId) => { ... },
+  // ACL options (pick one):
+  access: 'all',                           // any agent group
+  access: ['ag-xxx', 'ag-yyy'],            // specific groups only
+  access: (agentGroupId) => boolean,       // dynamic check
+});
+```
+
+### Per-agent scoping in handlers
+
+Handlers receive the resolved `agentGroupId` and can use it to scope behavior:
+
+- **Memsearch:** reads/writes the agent group's own `.memsearch/` directory. Agent A can't search agent B's memories.
+- **Vector:** only the Vector agent group (or groups with Vector access) can issue motor commands.
+- **Ollama:** any agent group can call, but the proxy could enforce per-group rate limits.
+
+The handler decides what to do with the identity — the proxy just provides it.
+
+---
+
+## 7. Adding a new host service
+
+A handler is a function that receives an HTTP request, the resolved agent group ID, and returns a response. Registration:
+
+```typescript
+registerService('memsearch.internal', {
+  access: 'all',
+  async handler(req, res, agentGroupId) {
+    // agentGroupId is verified — safe to use for scoping
+    const memoryDir = path.join(GROUPS_DIR, getFolder(agentGroupId), '.memsearch');
+    // ...
+  },
 });
 ```
 
 ### Checklist for a new service
 
 1. **Choose a hostname:** `<name>.internal`. Must not collide with existing services.
-2. **Write a handler:** A function `(req: IncomingMessage, res: ServerResponse) => void`. Runs on the host, full access to host filesystem and processes.
-3. **Register it:** Add to the handler map in the proxy's config/startup.
-4. **Document it:** Add to the routing table above.
-5. **Container access:** The container calls `https://<name>.internal/<path>`. No container-side changes needed beyond knowing the hostname.
+2. **Write a handler:** `(req, res, agentGroupId) => void`. Runs on the host with full access.
+3. **Set the ACL:** `'all'`, a list of group IDs, or a function.
+4. **Register it** in the proxy's startup.
+5. **Document it:** Add to the routing table in section 3.
+6. **Container access:** The container calls `https://<name>.internal/<path>`. No container-side changes needed.
 
 ### What a handler can do
 
 - Run a CLI tool and return stdout (memsearch)
 - Forward to a local HTTP service (Wire Pod, Ollama)
-- Read/write host filesystem (with appropriate scoping)
+- Read/write host filesystem, scoped by agent group ID
 - Access the NanoClaw central DB (if needed)
 
 ### What a handler should NOT do
 
 - Expose arbitrary command execution
 - Return credentials or secrets (that's OneCLI's job)
+- Trust the request content for identity — use the `agentGroupId` parameter
 - Bypass the proxy's routing — all traffic flows through the chokepoint
 
 ---
