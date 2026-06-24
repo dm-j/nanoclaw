@@ -3,10 +3,15 @@
 # The proxy resolves agent identity from our container IP
 # and scopes all operations to our agent group's memory directory.
 #
-# Uses HTTP_PROXY (already set by container startup) to route
-# through the host services proxy. curl respects HTTP_PROXY for
-# plain http:// URLs automatically.
+# Passes both args and stdin (for commands like `memsearch summarize`
+# which read input from stdin).
+
+STDIN_DATA=""
+if [ ! -t 0 ]; then
+  STDIN_DATA=$(cat)
+fi
 
 exec curl -sf "http://memsearch.internal/cli" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  --data-urlencode "args=$*"
+  --data-urlencode "args=$*" \
+  --data-urlencode "stdin=$STDIN_DATA"

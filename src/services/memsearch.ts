@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { parse as parseQs } from 'querystring';
@@ -37,9 +37,9 @@ export function registerMemsearchService(): void {
       const body = Buffer.concat(chunks).toString();
       const params = parseQs(body);
       const argsStr = (Array.isArray(params.args) ? params.args[0] : params.args) || '';
+      const stdinData = (Array.isArray(params.stdin) ? params.stdin[0] : params.stdin) || '';
 
       // ponytail: split args string. Good enough for memsearch subcommands.
-      // Doesn't handle quoted strings with spaces — upgrade if that matters.
       const userArgs = argsStr.split(/\s+/).filter(Boolean);
 
       if (userArgs.length === 0) {
@@ -53,7 +53,6 @@ export function registerMemsearchService(): void {
       const realArgs = [...userArgs, '--milvus-uri', milvusUri];
 
       // For index/watch commands, inject the memory directory as the path arg
-      // if no path was provided
       if ((subcommand === 'index' || subcommand === 'watch') && !userArgs.some((a) => a.startsWith('/'))) {
         realArgs.push(memoryDir);
       }
@@ -61,12 +60,26 @@ export function registerMemsearchService(): void {
       log.debug('memsearch relay', { agentGroupId, subcommand, milvusUri });
 
       await new Promise<void>((resolve) => {
-        execFile(MEMSEARCH_BIN, realArgs, { timeout: 30_000 }, (err, stdout, stderr) => {
-          if (err) {
-            log.warn('memsearch failed', { agentGroupId, subcommand, stderr: stderr?.slice(0, 300), code: err.code });
-            res.writeHead(500).end(stderr || err.message);
+        const proc = spawn(MEMSEARCH_BIN, realArgs, { timeout: 30_000 });
+        const stdout: Buffer[] = [];
+        const stderr: Buffer[] = [];
+
+        proc.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+        proc.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+
+        if (stdinData) {
+          proc.stdin.write(stdinData);
+        }
+        proc.stdin.end();
+
+        proc.on('close', (code) => {
+          const out = Buffer.concat(stdout).toString();
+          const err = Buffer.concat(stderr).toString();
+          if (code !== 0) {
+            log.warn('memsearch failed', { agentGroupId, subcommand, stderr: err.slice(0, 300), code });
+            res.writeHead(500).end(err || `exit code ${code}`);
           } else {
-            res.writeHead(200, { 'Content-Type': 'text/plain' }).end(stdout);
+            res.writeHead(200, { 'Content-Type': 'text/plain' }).end(out);
           }
           resolve();
         });
