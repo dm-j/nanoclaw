@@ -16,15 +16,29 @@ interface TranscriptEntry {
   };
 }
 
+
+function stripXmlWrapper(text: string): string {
+  // Strip <context timezone="..." /> and extract inner text from <message>... contents
+  return text
+    .replace(/<context\s+timezone="[^"]*"\s*\/?>\s*/gi, '')
+    .replace(/<message\b[^>]*>[\s\S]*?<\/message>/gi, (m) => {
+      const inner = m.replace(/<message\b[^>]*>\s*/, '').replace(/\s*<\/message>\s*$/, '');
+      return inner;
+    })
+    .trim();
+}
+
 function extractText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
+  let raw = '';
+  if (typeof content === 'string') {
+    raw = content;
+  } else if (Array.isArray(content)) {
+    raw = content
       .filter((c) => c.type === 'text' && typeof c.text === 'string')
       .map((c) => c.text)
       .join('\n');
   }
-  return '';
+  return stripXmlWrapper(raw);
 }
 
 function extractToolText(entry: TranscriptEntry): string | null {
