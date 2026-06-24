@@ -27,18 +27,6 @@ const DEFAULT_SETTINGS_JSON =
             ],
           },
         ],
-        Stop: [
-          {
-            hooks: [
-              {
-                type: 'command',
-                command: 'bash /app/memsearch-plugin/hooks/stop.sh',
-                async: true,
-                timeout: 120,
-              },
-            ],
-          },
-        ],
         SessionStart: [
           {
             hooks: [
@@ -216,13 +204,19 @@ function ensureMemsearchHooks(settingsFile: string, initialized: string[]): void
       changed = true;
     }
 
-    // Stop hook — summarize and save memory after each turn
-    if (!JSON.stringify(settings.hooks.Stop ?? []).includes(MEMSEARCH_STOP_COMMAND)) {
-      if (!settings.hooks.Stop) settings.hooks.Stop = [];
-      settings.hooks.Stop.push({
-        hooks: [{ type: 'command', command: MEMSEARCH_STOP_COMMAND, async: true, timeout: 120 }],
+    // Stop hook removed — agent-runner now captures memory directly after each exchange.
+    // Remove any stale Stop hook pointing at the plugin stop.sh so it doesn't write
+    // empty session headings.
+    if (settings.hooks.Stop) {
+      const before = settings.hooks.Stop.length;
+      settings.hooks.Stop = settings.hooks.Stop.filter((h: unknown) => {
+        const s = JSON.stringify(h);
+        return !s.includes(MEMSEARCH_STOP_COMMAND);
       });
-      changed = true;
+      if (settings.hooks.Stop.length !== before) {
+        if (settings.hooks.Stop.length === 0) delete settings.hooks.Stop;
+        changed = true;
+      }
     }
 
     // SessionStart hook — search for relevant context

@@ -5,6 +5,7 @@ import path from 'path';
 import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
+import { captureMemoryTurn } from '../memory-capture.js';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
@@ -129,8 +130,21 @@ function parseTranscript(content: string): ParsedMessage[] {
         const text = typeof entry.message.content === 'string' ? entry.message.content : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
         if (text) messages.push({ role: 'user', content: text });
       } else if (entry.type === 'assistant' && entry.message?.content) {
-        const textParts = entry.message.content.filter((c: { type: string }) => c.type === 'text').map((c: { text: string }) => c.text);
-        const text = textParts.join('');
+        const parts: string[] = [];
+        for (const block of entry.message.content) {
+          if (block.type === 'text' && block.text) {
+            parts.push(block.text);
+          } else if (block.type === 'tool_use' && block.name) {
+            const input = block.input ?? {};
+            if (block.name.includes('send_message') && typeof input.text === 'string') {
+              parts.push(input.text);
+            } else if (block.name.includes('send_file')) {
+              const fileName = typeof input.fileName === 'string' ? input.fileName : typeof input.filePath === 'string' ? path.basename(input.filePath) : 'file';
+              parts.push(`(sent file: ${fileName})`);
+            }
+          }
+        }
+        const text = parts.join('\n');
         if (text) messages.push({ role: 'assistant', content: text });
       }
     } catch {
@@ -388,6 +402,11 @@ export class ClaudeProvider implements AgentProvider {
       log(`Failed to move rotated transcript aside: ${err instanceof Error ? err.message : String(err)}`);
     }
     return reason;
+  }
+
+  onExchangeComplete(exchange: import('./types.js').ProviderExchange): void {
+    if (exchange.status === 'error') return;
+    captureMemoryTurn(exchange.continuation, this.assistantName);
   }
 
   query(input: QueryInput): AgentQuery {
