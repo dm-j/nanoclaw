@@ -90,7 +90,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 #     binary (linux-arm64 variant on our image). Without the allowlist
 #     the SDK fails at spawn time with "native binary not found".
 ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:/app/src/tools:$PATH"
+ENV PATH="$PNPM_HOME:$PATH"
 # Pin pnpm to match the host (package.json packageManager). pnpm 11 stopped
 # honoring `only-built-dependencies[]=` in .npmrc for global installs, which
 # silently skips claude-code's native-binary postinstall and agent-browser's
@@ -110,7 +110,9 @@ RUN --mount=type=cache,target=/root/.cache/pnpm \
 # ---- ncl CLI wrapper ----------------------------------------------------------
 # Actual script lives in the mounted source at /app/src/cli/ncl.ts.
 RUN printf '#!/bin/sh\nexec bun /app/src/cli/ncl.ts "$@"\n' > /usr/local/bin/ncl && \
-    chmod +x /usr/local/bin/ncl
+    chmod +x /usr/local/bin/ncl && \
+    printf '#!/bin/sh\nexec bun /app/src/tools/datetime.ts "$@"\n' > /usr/local/bin/datetime && \
+    chmod +x /usr/local/bin/datetime
 
 # ---- Entrypoint --------------------------------------------------------------
 COPY entrypoint.sh /app/entrypoint.sh
