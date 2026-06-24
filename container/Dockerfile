@@ -110,7 +110,9 @@ RUN --mount=type=cache,target=/root/.cache/pnpm \
 # ---- ncl CLI wrapper ----------------------------------------------------------
 # Actual script lives in the mounted source at /app/src/cli/ncl.ts.
 RUN printf '#!/bin/sh\nexec bun /app/src/cli/ncl.ts "$@"\n' > /usr/local/bin/ncl && \
-    chmod +x /usr/local/bin/ncl
+    chmod +x /usr/local/bin/ncl && \
+    printf '#!/bin/sh\nexec bun /app/src/tools/datetime.ts "$@"\n' > /usr/local/bin/datetime && \
+    chmod +x /usr/local/bin/datetime
 
 # ---- Entrypoint --------------------------------------------------------------
 COPY entrypoint.sh /app/entrypoint.sh
