@@ -15,6 +15,7 @@ import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
+import { startHostServicesProxy, stopHostServicesProxy } from './host-services-proxy.js';
 import { startFeeds, stopFeeds } from './mailman/feeds.js';
 import { startInboxWatcher, stopInboxWatcher } from './mailman/inbox-watcher.js';
 import { registerMailmanWebhook } from './mailman/webhook.js';
@@ -97,6 +98,9 @@ async function main(): Promise<void> {
   // 2. Container runtime
   ensureContainerRuntimeRunning();
   cleanupOrphans();
+
+  // 2b. Host services proxy — sits in front of OneCLI, handles .internal services
+  startHostServicesProxy(10260);
 
   // 3. Channel adapters
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {
@@ -194,6 +198,7 @@ async function shutdown(signal: string): Promise<void> {
   }
   stopDeliveryPolls();
   stopHostSweep();
+  stopHostServicesProxy();
   stopInboxWatcher();
   stopFeeds();
   await stopCliServer();

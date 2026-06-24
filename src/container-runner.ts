@@ -84,9 +84,19 @@ async function onecliGetContainerConfig(agent: string): Promise<OneCLIContainerC
   return res.json() as Promise<OneCLIContainerConfig>;
 }
 
+const HOST_SERVICES_PROXY_PORT = 10260;
+
 function applyOneCLIContainerConfig(args: string[], config: OneCLIContainerConfig): void {
   for (const [key, value] of Object.entries(config.env)) {
-    args.push('-e', `${key}=${value}`);
+    // Rewrite proxy URLs to point at the host services proxy instead of
+    // directly at OneCLI. The proxy forwards CONNECT tunnels to OneCLI
+    // and handles .internal services locally.
+    if (/^https?_proxy$/i.test(key) && value.includes(':10255')) {
+      const rewritten = value.replace(':10255', `:${HOST_SERVICES_PROXY_PORT}`);
+      args.push('-e', `${key}=${rewritten}`);
+    } else {
+      args.push('-e', `${key}=${value}`);
+    }
   }
 
   const caPath = path.join(os.tmpdir(), `onecli-ca-${Date.now()}.pem`);
