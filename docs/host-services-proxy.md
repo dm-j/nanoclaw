@@ -211,7 +211,38 @@ registerService('memsearch.internal', {
 
 ---
 
-## 6. Memsearch service (first handler)
+## 8. Memsearch service (first handler)
+
+### Scoping: agent group, not session
+
+Memory belongs to the **agent group**, not to an individual session or container. Lumen might have multiple concurrent sessions (different conversations, different containers) — they all read and write the same memory store. The Vector agent has its own, separate store.
+
+```
+Lumen session A (container 172.17.0.5)
+  → IP lookup → ag-1781738004490-2axf9a → folder: dm-with-dmj
+  → memsearch --dir groups/dm-with-dmj/.memsearch/memory/ search "medication"
+
+Lumen session B (container 172.17.0.8)
+  → IP lookup → ag-1781738004490-2axf9a → folder: dm-with-dmj
+  → same directory, same index, same results
+
+Vector session (container 172.17.0.6)
+  → IP lookup → f9e4e40f-... → folder: vector
+  → memsearch --dir groups/vector/.memsearch/memory/ search "desk layout"
+  → completely separate store
+```
+
+The ccplugin's stop hook writes a memory summary after each conversation turn. The init hook searches for relevant context at session start. Both calls hit the proxy, which resolves the agent group from the source IP and scopes the memsearch invocation to that group's directory. Multiple sessions accumulate memories into the same store; any session can recall them.
+
+### Memory directory layout
+
+```
+groups/<folder>/.memsearch/
+  memory/           ← markdown files, one per day (source of truth)
+  index/            ← Milvus Lite index (derived, rebuildable via memsearch reset + index)
+```
+
+The `memory/` directory is the source of truth. The index is derived and can be rebuilt at any time. Both persist across container restarts because `groups/<folder>/` is mounted into the container.
 
 ### Container side
 
@@ -229,40 +260,49 @@ The ccplugin hooks (stop hook: summarize + index, init hook: search for context)
 
 ### Host side
 
-The `memsearch.internal` handler:
+The `memsearch.internal` handler receives the verified `agentGroupId` from the proxy's identity layer. It resolves the agent group's folder and scopes all memsearch operations to that group's directory. **No directory parameter comes from the container** — the container cannot influence which memory store it reads or writes.
+
+```typescript
+registerService('memsearch.internal', {
+  access: 'all',
+  async handler(req, res, agentGroupId) {
+    const group = getAgentGroup(agentGroupId);
+    if (!group) return res.writeHead(404).end('agent group not found');
+    const memDir = path.join(GROUPS_DIR, group.folder, '.memsearch', 'memory');
+    // All memsearch commands run scoped to this directory
+    // e.g.: memsearch search --dir <memDir> <query>
+  },
+});
+```
+
+Endpoints:
 
 ```
 POST /cli
   body: args=search "medication schedule" --top-k 5 --json-output
-  → spawn memsearch with those args
-  → return stdout as response body
+  → spawn: memsearch --dir <agent-group-memory-dir> search "medication schedule" --top-k 5 --json-output
+  → return stdout
 
 POST /index
-  body: content=<markdown text>&path=<file path>
-  → write to memory dir, run memsearch index
+  body: content=<markdown text>&path=<relative-path>
+  → write content to <agent-group-memory-dir>/<relative-path>
+  → spawn: memsearch --dir <agent-group-memory-dir> index .
   → return success
 
 GET /health
-  → return memsearch stats
+  → spawn: memsearch --dir <agent-group-memory-dir> stats
+  → return result
 ```
 
-### Memory directory
+The `--dir` flag is always injected by the handler, never passed from the container. A compromised container cannot read another agent's memories by manipulating the request.
 
-Each agent group gets its own memsearch memory directory:
+### Cross-agent memory sharing (future)
 
-```
-groups/<folder>/.memsearch/
-  memory/           ← markdown files (source of truth)
-  index/            ← Milvus Lite index (derived, rebuildable)
-```
-
-The proxy handler reads the agent group ID from a request header (stamped by the container at startup, like the session ID) and scopes the memsearch invocation to that group's directory.
-
-**Cross-agent memory sharing** is possible by pointing multiple groups at the same `.memsearch/` directory, but that's a future decision, not a default.
+By default, each agent group has isolated memory. Sharing is possible by symlinking one group's `.memsearch/` to another's, but that's a deliberate operator decision — not something agents can request. A future ACL extension could allow read-only cross-group search (e.g., Vector can search Lumen's memories but not write to them).
 
 ---
 
-## 7. Implementation plan
+## 9. Implementation plan
 
 ### Phase 1: Proxy skeleton
 
@@ -289,7 +329,7 @@ The proxy handler reads the agent group ID from a request header (stamped by the
 
 ---
 
-## 8. Alternatives considered
+## 10. Alternatives considered
 
 | Alternative | Why not |
 |-------------|---------|
@@ -301,7 +341,7 @@ The proxy handler reads the agent group ID from a request header (stamped by the
 
 ---
 
-## 9. Open questions
+## 11. Open questions
 
 - **Per-agent scoping:** Should the proxy enforce which agent group can access which service? Currently no — any container can call any registered `.internal` hostname. Per-agent ACLs are a future enhancement.
 - **TLS termination:** The proxy needs to present a cert for `*.internal` that containers trust. Simplest: reuse OneCLI's CA to sign a wildcard cert for `*.internal`.
