@@ -13,4 +13,12 @@ set -e
 
 cat > /tmp/input.json
 
+# Auto-generate CLI wrappers for any .ts tools in the mounted source
+for f in /app/src/tools/*.ts; do
+  [ -f "$f" ] || continue
+  name=$(basename "$f" .ts)
+  printf '#!/bin/sh\nexec bun "%s" "$@"\n' "$f" > "/usr/local/bin/$name"
+  chmod +x "/usr/local/bin/$name"
+done
+
 exec bun run /app/src/index.ts < /tmp/input.json
