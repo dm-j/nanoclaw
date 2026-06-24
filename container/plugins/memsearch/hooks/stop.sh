@@ -171,6 +171,8 @@ fi
   echo ""
 } >> "$MEMORY_FILE"
 
+log_injection "Stop" "memory_file: $MEMORY_FILE | summary_bytes: ${#SUMMARY} | summary_preview: $(printf '%.500s' "$SUMMARY" | tr '\n' ' ')"
+
 # Kill any previous background index before re-indexing to avoid process accumulation
 kill_orphaned_index
 

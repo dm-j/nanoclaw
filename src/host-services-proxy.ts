@@ -40,10 +40,10 @@ async function refreshIpCache(): Promise<void> {
   // ponytail: shell out to docker CLI, not dockerode. One less dep.
   const { execSync } = await import('child_process');
   try {
-    const out = execSync(
-      `docker ps --filter "label=${CONTAINER_INSTALL_LABEL}" --format '{{.Names}} {{.ID}}'`,
-      { encoding: 'utf-8', timeout: 5000 },
-    ).trim();
+    const out = execSync(`docker ps --filter "label=${CONTAINER_INSTALL_LABEL}" --format '{{.Names}} {{.ID}}'`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    }).trim();
     if (!out) return;
 
     for (const line of out.split('\n')) {

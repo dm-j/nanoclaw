@@ -14,8 +14,10 @@ fi
 
 # Need memsearch available
 if [ -z "$MEMSEARCH_CMD" ]; then
+  log_injection "UserPromptSubmit" "prompt_len: ${#PROMPT} | hint: skipped (memsearch not found)"
   echo '{}'
   exit 0
 fi
 
+log_injection "UserPromptSubmit" "prompt_len: ${#PROMPT} | hint: [memsearch] Memory available"
 echo '{"systemMessage": "[memsearch] Memory available"}'

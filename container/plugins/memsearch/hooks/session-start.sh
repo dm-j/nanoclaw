@@ -151,6 +151,7 @@ json_status=$(_json_encode_str "$status")
 
 # If memory dir has no .md files (other than the one we just created), nothing to inject
 if [ ! -d "$MEMORY_DIR" ] || ! ls "$MEMORY_DIR"/*.md &>/dev/null; then
+  log_injection "SessionStart" "status: $status | context_bytes: 0 (no prior .md files)"
   echo "{\"systemMessage\": $json_status}"
   exit 0
 fi
@@ -182,7 +183,9 @@ fi
 
 if [ -n "$context" ]; then
   json_context=$(_json_encode_str "$context")
+  log_injection "SessionStart" "status: $status | context_bytes: ${#context} | context_preview: $(printf '%.500s' "$context" | tr '\n' ' ')"
   echo "{\"systemMessage\": $json_status, \"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": $json_context}}"
 else
+  log_injection "SessionStart" "status: $status | context_bytes: 0 (no structured context extracted)"
   echo "{\"systemMessage\": $json_status}"
 fi

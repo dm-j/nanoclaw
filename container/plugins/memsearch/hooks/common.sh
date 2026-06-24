@@ -120,6 +120,21 @@ ensure_memory_dir() {
   mkdir -p "$MEMORY_DIR"
 }
 
+# Helper: append hook output/injection details to a project-scoped log.
+# MVP: lets users tail one file to see what memsearch is injecting and when.
+log_injection() {
+  local hook_name="$1"
+  local payload="$2"
+  local log_dir="$MEMSEARCH_DIR/logs"
+  mkdir -p "$log_dir"
+  local log_file="$log_dir/injections.log"
+  {
+    echo "--- $(date '+%Y-%m-%d %H:%M:%S') ${hook_name} ---"
+    echo "$payload"
+    echo ""
+  } >> "$log_file"
+}
+
 # Collection description (set by session-start.sh, empty by default)
 COLLECTION_DESC=""
 
