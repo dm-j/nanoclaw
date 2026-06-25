@@ -163,7 +163,11 @@ export function startHostServicesProxy(port: number): void {
     if (identitySource === 'token') {
       log.info('Host services proxy: caller identified by service token', { service: serviceName, agentGroupId });
     } else {
-      log.debug('Host services proxy: resolved caller by IP', { service: serviceName, remoteIp: getRemoteIp(req), agentGroupId });
+      log.debug('Host services proxy: resolved caller by IP', {
+        service: serviceName,
+        remoteIp: getRemoteIp(req),
+        agentGroupId,
+      });
     }
 
     try {

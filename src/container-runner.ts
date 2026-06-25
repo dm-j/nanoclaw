@@ -127,10 +127,7 @@ function applyOneCLIContainerConfig(args: string[], config: OneCLIContainerConfi
 }
 
 /** Active containers tracked by session ID. */
-const activeContainers = new Map<
-  string,
-  { process: ChildProcess; containerName: string; serviceToken: string }
->();
+const activeContainers = new Map<string, { process: ChildProcess; containerName: string; serviceToken: string }>();
 
 /**
  * In-flight wake promises, keyed by session id. Deduplicates concurrent

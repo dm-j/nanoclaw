@@ -68,7 +68,7 @@ describe('service token wiring (structural)', () => {
   // into the container env so the memsearch stub can authenticate.
   it('generates, registers, and injects a service token', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src', 'container-runner.ts'), 'utf-8');
-    expect(src).toContain('crypto.randomBytes(32).toString(\'base64url\')');
+    expect(src).toContain("crypto.randomBytes(32).toString('base64url')");
     expect(src).toContain('registerServiceToken(serviceToken, agentGroup.id, session.id)');
     expect(src).toContain('NANOCLAW_SERVICE_TOKEN=${serviceToken}');
     expect(src).toContain('revokeServiceToken(serviceToken)');
