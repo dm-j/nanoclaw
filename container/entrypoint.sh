@@ -21,4 +21,10 @@ for f in /app/src/tools/*.ts; do
   chmod +x "/usr/local/bin/$name"
 done
 
+# Link shell scripts from tools folder directly onto PATH
+for f in /app/src/tools/*; do
+  [ -f "$f" ] && [ -x "$f" ] && [ "${f##*.}" != "ts" ] && [ "${f##*.}" != "md" ] || continue
+  cp "$f" "/usr/local/bin/$(basename "$f")"
+done
+
 exec bun run /app/src/index.ts < /tmp/input.json

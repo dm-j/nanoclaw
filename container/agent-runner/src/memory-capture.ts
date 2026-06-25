@@ -165,7 +165,9 @@ export function captureMemoryTurn(sessionId: string | undefined, assistantName =
   try {
     fs.mkdirSync(MEMORY_DIR, { recursive: true });
     const file = path.join(MEMORY_DIR, `${date}.md`);
-    const entry = `## Session ${time}\n**User**: ${turn.user}\n**${assistantName}**: ${turn.assistant.replace(/\n/g, '\n  ')}\n\n`;
+    const userSnip = turn.user.replace(/\n/g, ' ').slice(0, 300);
+    const asstSnip = turn.assistant.replace(/\n/g, ' ').slice(0, 500);
+    const entry = `## Session ${time}\n- User: ${userSnip}\n- ${assistantName}: ${asstSnip}\n\n`;
     fs.appendFileSync(file, entry);
     log(`captureMemory: wrote ${file}`);
   } catch (err) {

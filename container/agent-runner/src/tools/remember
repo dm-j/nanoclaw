@@ -1,0 +1,17 @@
+#!/bin/sh
+# ponytail: bare-minimum fact recorder; upgrade to tagged/categorized if needed
+set -e
+
+if [ -z "$1" ]; then
+  echo "Usage: remember <fact>" >&2
+  exit 1
+fi
+
+MEMORY_DIR="/workspace/agent/.memsearch/memory"
+mkdir -p "$MEMORY_DIR"
+
+TODAY=$(date +%Y-%m-%d)
+FILE="$MEMORY_DIR/$TODAY.md"
+
+echo "- $*" >> "$FILE"
+echo "Remembered."
