@@ -2,6 +2,19 @@
   "sandbox": {
     "enabled": false
   },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "rtk hook claude"
+          }
+        ]
+      }
+    ]
+  },
   "permissions": {
     "allow": [
       "Bash(pnpm exec tsx scripts/q.ts *)",
@@ -16,7 +29,12 @@
       "Bash(docker images *)",
       "Bash(pnpm exec vitest run *)",
       "Bash(onecli help|--help|auth status *)",
-      "Bash(onecli config get *)"
+      "Bash(onecli config get *)",
+      "Bash(pnpm run build)",
+      "Bash(pnpm exec tsc *)",
+      "Bash(pnpm --filter nanoclaw run test *)",
+      "Bash(curl -s http://localhost:11434/*)",
+      "Bash(lsof -i *)"
     ]
   }
 }
