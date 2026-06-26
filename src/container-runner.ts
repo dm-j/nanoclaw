@@ -600,8 +600,11 @@ async function buildContainerArgs(
 
   // Default inference base URL: all containers route through the inference router,
   // which strips model-name prefixes and dispatches to Ollama or Anthropic/OneCLI.
-  // Per-group env below can override this if needed.
+  // NO_PROXY ensures host.docker.internal bypasses HTTP_PROXY (injected by OneCLI)
+  // so the plain-HTTP request to :10261 isn't intercepted by the host-services-proxy.
   args.push('-e', 'ANTHROPIC_BASE_URL=http://host.docker.internal:10261');
+  args.push('-e', 'NO_PROXY=host.docker.internal');
+  args.push('-e', 'no_proxy=host.docker.internal');
 
   // Per-agent-group env overrides (file-only field in container.json).
   // Applied after OneCLI so they win over proxy-injected values.
