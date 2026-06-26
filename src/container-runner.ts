@@ -603,6 +603,7 @@ async function buildContainerArgs(
   // NO_PROXY ensures host.docker.internal bypasses HTTP_PROXY (injected by OneCLI)
   // so the plain-HTTP request to :10261 isn't intercepted by the host-services-proxy.
   args.push('-e', 'ANTHROPIC_BASE_URL=http://host.docker.internal:10261');
+  args.push('-e', 'ANTHROPIC_API_KEY=INJECTED_BY_ONECLI');
   args.push('-e', 'NO_PROXY=host.docker.internal');
   args.push('-e', 'no_proxy=host.docker.internal');
 

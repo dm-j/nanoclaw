@@ -227,7 +227,7 @@ export interface MountValidationResult {
  * Validate a single additional mount against the allowlist.
  * Returns validation result with reason.
  */
-export function validateMount(mount: AdditionalMount): MountValidationResult {
+export function validateMount(mount: AdditionalMount, opts: { trusted?: boolean } = {}): MountValidationResult {
   const allowlist = loadMountAllowlist();
 
   // If no allowlist, block all additional mounts
@@ -241,11 +241,20 @@ export function validateMount(mount: AdditionalMount): MountValidationResult {
   // Derive containerPath from hostPath basename if not specified
   const containerPath = mount.containerPath || path.basename(mount.hostPath);
 
-  // Validate container path (cheap check)
-  if (!isValidContainerPath(containerPath)) {
+  // Validate container path. Trusted callers (operator container config) may
+  // specify absolute paths (e.g. /usr/local/bin/rtk) — those are used as-is
+  // in the docker -v arg. Untrusted callers (agent self-mod requests) are
+  // restricted to relative paths that get sandboxed under /workspace/extra/.
+  if (!opts.trusted && !isValidContainerPath(containerPath)) {
     return {
       allowed: false,
       reason: `Invalid container path: "${containerPath}" - must be relative, non-empty, and not contain ".."`,
+    };
+  }
+  if (opts.trusted && (containerPath.includes('..') || !containerPath.trim())) {
+    return {
+      allowed: false,
+      reason: `Invalid container path: "${containerPath}" - must be non-empty and not contain ".."`,
     };
   }
 
@@ -326,12 +335,17 @@ export function validateAdditionalMounts(
   }> = [];
 
   for (const mount of mounts) {
-    const result = validateMount(mount);
+    // Operator-configured mounts are trusted: absolute container paths are
+    // allowed and used as-is (e.g. /usr/local/bin/rtk). Relative paths still
+    // get sandboxed under /workspace/extra/ as before.
+    const result = validateMount(mount, { trusted: true });
 
     if (result.allowed) {
+      const resolvedPath = result.resolvedContainerPath!;
+      const containerPath = resolvedPath.startsWith('/') ? resolvedPath : `/workspace/extra/${resolvedPath}`;
       validatedMounts.push({
         hostPath: result.realHostPath!,
-        containerPath: `/workspace/extra/${result.resolvedContainerPath}`,
+        containerPath,
         readonly: result.effectiveReadonly!,
       });
 
