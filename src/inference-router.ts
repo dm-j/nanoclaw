@@ -21,7 +21,7 @@ const OLLAMA_PORT = 11434;
 
 type Backend = { kind: 'ollama' } | { kind: 'anthropic' };
 
-function parsePrefix(model: string): { backend: Backend; model: string } {
+export function parsePrefix(model: string): { backend: Backend; model: string } {
   if (model.startsWith('ollama-')) {
     return { backend: { kind: 'ollama' }, model: model.slice('ollama-'.length) };
   }

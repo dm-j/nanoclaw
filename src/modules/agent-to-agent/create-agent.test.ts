@@ -93,12 +93,57 @@ describe('handleCreateAgent — scope-based authorization', () => {
     expect(mockUpdateScalars).toHaveBeenCalledWith(expect.any(String), { provider: 'codex' });
   });
 
-  it('claude creator leaves the child provider unset (built-in default)', async () => {
-    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' }); // no provider
+  it('claude creator with no model leaves the child config unset (built-in default)', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' }); // no provider, no model
 
     await handleCreateAgent({ name: 'Scout', instructions: 'help' }, SESSION);
 
     expect(mockUpdateScalars).not.toHaveBeenCalled();
+  });
+
+  it('explicit model in payload is stamped onto the child config', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+
+    await handleCreateAgent({ name: 'Scout', model: 'ollama-kimi-k2.6:cloud' }, SESSION);
+
+    expect(mockUpdateScalars).toHaveBeenCalledWith(expect.any(String), { model: 'ollama-kimi-k2.6:cloud' });
+  });
+
+  it('child inherits parent model when no model is specified in payload', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global', model: 'ollama-kimi-k2.6:cloud' });
+
+    await handleCreateAgent({ name: 'Scout' }, SESSION);
+
+    expect(mockUpdateScalars).toHaveBeenCalledWith(expect.any(String), { model: 'ollama-kimi-k2.6:cloud' });
+  });
+
+  it('payload model overrides parent model', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global', model: 'ollama-kimi-k2.6:cloud' });
+
+    await handleCreateAgent({ name: 'Scout', model: 'anthropic-claude-sonnet-4-6' }, SESSION);
+
+    expect(mockUpdateScalars).toHaveBeenCalledWith(expect.any(String), { model: 'anthropic-claude-sonnet-4-6' });
+  });
+
+  it('both provider and model are written in a single updateContainerConfigScalars call', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global', provider: 'codex', model: 'ollama-kimi-k2.6:cloud' });
+
+    await handleCreateAgent({ name: 'Scout' }, SESSION);
+
+    expect(mockUpdateScalars).toHaveBeenCalledTimes(1);
+    expect(mockUpdateScalars).toHaveBeenCalledWith(expect.any(String), {
+      provider: 'codex',
+      model: 'ollama-kimi-k2.6:cloud',
+    });
+  });
+
+  it('model is included in approval payload for confined groups', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
+
+    await handleCreateAgent({ name: 'Scout', model: 'ollama-kimi-k2.6:cloud' }, SESSION);
+
+    expect(mockRequestApproval).toHaveBeenCalledTimes(1);
+    expect(mockRequestApproval.mock.calls[0][0].payload).toMatchObject({ model: 'ollama-kimi-k2.6:cloud' });
   });
 
   it('group scope (default): requires approval, does NOT create directly', async () => {
