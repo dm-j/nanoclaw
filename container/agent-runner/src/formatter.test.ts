@@ -165,6 +165,44 @@ describe('XML escaping', () => {
   });
 });
 
+describe('accumulated batch formatting', () => {
+  it('prepends system note when accumulated=true', () => {
+    insertMessage('m1', 'chat', { sender: 'Alice', text: 'hello' });
+    const result = formatMessages(getPendingMessages(), true);
+    expect(result).toContain('Message batch arrived while agent was already responding to earlier events.');
+  });
+
+  it('no system note when accumulated=false (default)', () => {
+    insertMessage('m1', 'chat', { sender: 'Alice', text: 'hello' });
+    const result = formatMessages(getPendingMessages());
+    expect(result).not.toContain('Message batch arrived');
+  });
+
+  it('separates multiple chat messages with --- delimiter', () => {
+    insertMessage('m1', 'chat', { sender: 'Alice', text: 'first message' });
+    insertMessage('m2', 'chat', { sender: 'Alice', text: 'second message' });
+    const result = formatMessages(getPendingMessages());
+    expect(result).toContain('---');
+    expect(result).toContain('first message');
+    expect(result).toContain('second message');
+  });
+
+  it('no --- delimiter for a single chat message', () => {
+    insertMessage('m1', 'chat', { sender: 'Alice', text: 'hello' });
+    const result = formatMessages(getPendingMessages());
+    expect(result).not.toContain('---');
+  });
+
+  it('system note appears before message content', () => {
+    insertMessage('m1', 'chat', { sender: 'Alice', text: 'hello' });
+    const result = formatMessages(getPendingMessages(), true);
+    const noteIdx = result.indexOf('Message batch arrived');
+    const msgIdx = result.indexOf('<message ');
+    expect(noteIdx).toBeGreaterThan(0);
+    expect(msgIdx).toBeGreaterThan(noteIdx);
+  });
+});
+
 describe('stripInternalTags', () => {
   it('strips single-line internal tags and trims', () => {
     expect(stripInternalTags('hello <internal>secret</internal> world')).toBe('hello  world');

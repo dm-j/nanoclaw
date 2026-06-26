@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './db/connection.js';
-import { getPendingMessages, markCompleted } from './db/messages-in.js';
+import { getPendingMessages, getPendingBatch, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
 import { isCorruptionError, processQuery } from './poll-loop.js';
@@ -189,6 +189,93 @@ describe('on_wake filtering', () => {
       .run();
     // Should be returned even on non-first poll (on_wake=0)
     expect(getPendingMessages(false)).toHaveLength(1);
+  });
+});
+
+describe('getPendingBatch', () => {
+  function insertRouted(
+    id: string,
+    content: object,
+    opts: { channelType?: string; platformId?: string; trigger?: 0 | 1; onWake?: 0 | 1 } = {},
+  ) {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO messages_in (id, kind, timestamp, status, channel_type, platform_id, trigger, on_wake, content)
+         VALUES (?, 'chat', datetime('now'), 'pending', ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        opts.channelType ?? null,
+        opts.platformId ?? null,
+        opts.trigger ?? 1,
+        opts.onWake ?? 0,
+        JSON.stringify(content),
+      );
+  }
+
+  it('single sender: returns their messages, accumulated=false', () => {
+    insertRouted('m1', { text: 'hi' }, { channelType: 'telegram', platformId: 'u1' });
+    const { messages, accumulated } = getPendingBatch();
+    expect(messages.map((m) => m.id)).toEqual(['m1']);
+    expect(accumulated).toBe(false);
+  });
+
+  it('users (non-agent) take priority over agents', () => {
+    insertRouted('ag1', { text: 'from agent' }, { channelType: 'agent', platformId: 'ag-123' });
+    insertRouted('u1', { text: 'from user' }, { channelType: 'telegram', platformId: 'user1' });
+    const { messages, accumulated } = getPendingBatch();
+    expect(messages[0].id).toBe('u1');
+    expect(accumulated).toBe(true);
+  });
+
+  it('two user senders: oldest pending first, accumulated=true', () => {
+    insertRouted('m1', { text: 'alice' }, { channelType: 'telegram', platformId: 'alice' });
+    insertRouted('m2', { text: 'bob' }, { channelType: 'telegram', platformId: 'bob' });
+    const { messages, accumulated } = getPendingBatch();
+    expect(messages[0].id).toBe('m1');
+    expect(accumulated).toBe(true);
+  });
+
+  it('batches all messages from the same sender together', () => {
+    insertRouted('m1', { text: 'first' }, { channelType: 'telegram', platformId: 'alice' });
+    insertRouted('m2', { text: 'second' }, { channelType: 'telegram', platformId: 'alice' });
+    const { messages, accumulated } = getPendingBatch();
+    expect(messages.map((m) => m.id)).toEqual(['m1', 'm2']);
+    expect(accumulated).toBe(false);
+  });
+
+  it('trigger=0 only: returns empty (no eligible senders)', () => {
+    insertRouted('m1', { text: 'noise' }, { trigger: 0 });
+    const { messages } = getPendingBatch();
+    expect(messages).toHaveLength(0);
+  });
+
+  it('sender with only trigger=0 is ineligible; other sender with trigger=1 is chosen', () => {
+    insertRouted('m1', { text: 'ctx' }, { channelType: 'telegram', platformId: 'alice', trigger: 0 });
+    insertRouted('m2', { text: 'ping' }, { channelType: 'telegram', platformId: 'bob', trigger: 1 });
+    const { messages } = getPendingBatch();
+    expect(messages.map((m) => m.id)).toEqual(['m2']);
+  });
+
+  it('trigger=0 rides along with trigger=1 from the same sender', () => {
+    insertRouted('m1', { text: 'ctx' }, { channelType: 'telegram', platformId: 'alice', trigger: 0 });
+    insertRouted('m2', { text: 'ping' }, { channelType: 'telegram', platformId: 'alice', trigger: 1 });
+    const { messages } = getPendingBatch();
+    expect(messages.map((m) => m.id)).toEqual(['m1', 'm2']);
+  });
+
+  it('first poll: only on_wake=1 messages returned', () => {
+    insertRouted('wake', { text: 'Resuming.' }, { onWake: 1 });
+    insertRouted('norm', { text: 'hello' }, { onWake: 0 });
+    const { messages } = getPendingBatch(true);
+    expect(messages.map((m) => m.id)).toEqual(['wake']);
+  });
+
+  it('subsequent poll: on_wake=1 messages skipped', () => {
+    insertRouted('wake', { text: 'Resuming.' }, { onWake: 1 });
+    insertRouted('norm', { text: 'hello' }, { onWake: 0 });
+    const { messages } = getPendingBatch(false);
+    expect(messages.map((m) => m.id)).toEqual(['norm']);
   });
 });
 
