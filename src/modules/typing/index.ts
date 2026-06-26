@@ -27,7 +27,7 @@ const TYPING_REFRESH_MS = 4000;
  * for this long regardless of heartbeat state. Covers container
  * spawn/wake latency (5–12s on cold start before first heartbeat).
  */
-const TYPING_GRACE_MS = 15000;
+const TYPING_GRACE_MS = 90000;
 /**
  * After the grace window, a heartbeat must be mtimed within this
  * many ms of now to count as "agent is working." Heartbeats land

@@ -32,12 +32,13 @@ function parsePrefix(model: string): { backend: Backend; model: string } {
 }
 
 function forwardToOllama(req: http.IncomingMessage, res: http.ServerResponse, body: Buffer): void {
+  const headers = { ...req.headers, host: `127.0.0.1:${OLLAMA_PORT}`, 'content-length': String(body.length) };
   const options: http.RequestOptions = {
     hostname: '127.0.0.1',
     port: OLLAMA_PORT,
     path: req.url,
     method: req.method,
-    headers: { ...req.headers, host: `127.0.0.1:${OLLAMA_PORT}` },
+    headers,
   };
 
   const upstream = http.request(options, (upRes) => {
