@@ -5,9 +5,9 @@
  * field from each request body, strips a protocol prefix, rewrites the body,
  * and forwards to the right backend:
  *
- *   ollama://kimi-k2.6:cloud  → localhost:11434  (plain HTTP)
- *   anthropic://claude-sonnet → OneCLI :10255    (CONNECT tunnel)
- *   claude-sonnet             → OneCLI :10255    (default, no prefix)
+ *   ollama-kimi-k2.6:cloud  → localhost:11434  (plain HTTP)
+ *   anthropic-claude-sonnet → OneCLI :10255    (CONNECT tunnel)
+ *   claude-sonnet           → OneCLI :10255    (default, no prefix)
  *
  * Streaming responses are piped directly after the body rewrite.
  */
@@ -22,11 +22,11 @@ const OLLAMA_PORT = 11434;
 type Backend = { kind: 'ollama' } | { kind: 'anthropic' };
 
 function parsePrefix(model: string): { backend: Backend; model: string } {
-  if (model.startsWith('ollama://')) {
-    return { backend: { kind: 'ollama' }, model: model.slice('ollama://'.length) };
+  if (model.startsWith('ollama-')) {
+    return { backend: { kind: 'ollama' }, model: model.slice('ollama-'.length) };
   }
-  if (model.startsWith('anthropic://')) {
-    return { backend: { kind: 'anthropic' }, model: model.slice('anthropic://'.length) };
+  if (model.startsWith('anthropic-')) {
+    return { backend: { kind: 'anthropic' }, model: model.slice('anthropic-'.length) };
   }
   return { backend: { kind: 'anthropic' }, model };
 }
@@ -122,7 +122,7 @@ export function startInferenceRouter(port: number): void {
 
     try {
       const parsed = JSON.parse(rawBody.toString('utf-8'));
-      if (typeof parsed.model === 'string' && parsed.model.includes('://')) {
+      if (typeof parsed.model === 'string' && /^(ollama|anthropic)-/.test(parsed.model)) {
         const resolved = parsePrefix(parsed.model);
         backend = resolved.backend;
         parsed.model = resolved.model;

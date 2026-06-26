@@ -25,8 +25,8 @@ container
 
 | Prefix | Backend | Example |
 |--------|---------|---------|
-| `ollama://` | Local Ollama at :11434 | `ollama://kimi-k2.6:cloud` |
-| `anthropic://` | Anthropic via OneCLI | `anthropic://claude-sonnet-4-6` |
+| `ollama-` | Local Ollama at :11434 | `ollama-kimi-k2.6:cloud` |
+| `anthropic-` | Anthropic via OneCLI | `anthropic-claude-sonnet-4-6` |
 | _(none)_ | Anthropic via OneCLI | `claude-sonnet-4-6` |
 
 Prefix is stripped before forwarding. Ollama receives the bare model name; Anthropic receives the bare model name with secrets injected by OneCLI.
