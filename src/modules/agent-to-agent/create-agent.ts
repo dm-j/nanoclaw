@@ -59,6 +59,7 @@ function notifyAgent(session: Session, text: string): void {
 export async function handleCreateAgent(content: Record<string, unknown>, session: Session): Promise<void> {
   const name = typeof content.name === 'string' ? content.name : '';
   const instructions = typeof content.instructions === 'string' ? content.instructions : null;
+  const model = typeof content.model === 'string' ? content.model : null;
 
   if (!name) {
     notifyAgent(session, 'create_agent failed: name is required.');
@@ -75,7 +76,7 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
   const cliScope = getContainerConfig(session.agent_group_id)?.cli_scope ?? 'group';
   if (cliScope === 'global') {
     // Trusted owner agent group — create directly, then notify (+wake) it.
-    await performCreateAgent(name, instructions, session, sourceGroup, (text) => notifyAgent(session, text));
+    await performCreateAgent(name, instructions, model, session, sourceGroup, (text) => notifyAgent(session, text));
     return;
   }
 
@@ -83,7 +84,7 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
     session,
     agentName: sourceGroup.name,
     action: 'create_agent',
-    payload: { name, instructions },
+    payload: { name, instructions, model },
     title: `Create agent: ${name}`,
     question: `Agent "${sourceGroup.name}" wants to create a new sub-agent "${name}" (a new agent group with its own workspace and container). Approve?`,
   });
@@ -96,6 +97,7 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
 export const applyCreateAgent: ApprovalHandler = async ({ session, payload, notify }) => {
   const name = typeof payload.name === 'string' ? payload.name : '';
   const instructions = typeof payload.instructions === 'string' ? payload.instructions : null;
+  const model = typeof payload.model === 'string' ? payload.model : null;
 
   if (!name) {
     notify('create_agent approved but the request had no name.');
@@ -109,7 +111,7 @@ export const applyCreateAgent: ApprovalHandler = async ({ session, payload, noti
     return;
   }
 
-  await performCreateAgent(name, instructions, session, sourceGroup, notify);
+  await performCreateAgent(name, instructions, model, session, sourceGroup, notify);
 };
 
 /**
@@ -123,6 +125,7 @@ export const applyCreateAgent: ApprovalHandler = async ({ session, payload, noti
 async function performCreateAgent(
   name: string,
   instructions: string | null,
+  model: string | null,
   session: Session,
   sourceGroup: AgentGroup,
   notify: (text: string) => void,
@@ -169,10 +172,15 @@ async function performCreateAgent(
   // authenticated) doesn't spawn a child on a runtime it can't reach. The
   // operator can still flip a child later with `ncl groups config update
   // --provider`. claude (the built-in default) leaves the column unset.
-  const parentProvider = getContainerConfig(sourceGroup.id)?.provider ?? undefined;
+  const parentConfig = getContainerConfig(sourceGroup.id);
+  const parentProvider = parentConfig?.provider ?? undefined;
+  const resolvedModel = model ?? parentConfig?.model ?? undefined;
   initGroupFilesystem(newGroup, { instructions: instructions ?? undefined, provider: parentProvider });
-  if (parentProvider) {
-    updateContainerConfigScalars(newGroup.id, { provider: parentProvider });
+  const scalarUpdates: Record<string, string> = {};
+  if (parentProvider) scalarUpdates.provider = parentProvider;
+  if (resolvedModel) scalarUpdates.model = resolvedModel;
+  if (Object.keys(scalarUpdates).length > 0) {
+    updateContainerConfigScalars(newGroup.id, scalarUpdates);
   }
 
   // Insert bidirectional destination rows (= ACL grants).

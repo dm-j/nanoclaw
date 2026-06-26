@@ -598,6 +598,11 @@ async function buildContainerArgs(
   applyOneCLIContainerConfig(args, onecliConfig);
   log.info('OneCLI gateway applied', { containerName });
 
+  // Default inference base URL: all containers route through the inference router,
+  // which strips model-name prefixes and dispatches to Ollama or Anthropic/OneCLI.
+  // Per-group env below can override this if needed.
+  args.push('-e', 'ANTHROPIC_BASE_URL=http://host.docker.internal:10261');
+
   // Per-agent-group env overrides (file-only field in container.json).
   // Applied after OneCLI so they win over proxy-injected values.
   if (containerConfig.env) {

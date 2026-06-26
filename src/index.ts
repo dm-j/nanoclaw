@@ -16,6 +16,7 @@ import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runti
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { startHostServicesProxy, stopHostServicesProxy } from './host-services-proxy.js';
+import { startInferenceRouter, stopInferenceRouter } from './inference-router.js';
 import { registerMemsearchService } from './services/memsearch.js';
 import { startFeeds, stopFeeds } from './mailman/feeds.js';
 import { startInboxWatcher, stopInboxWatcher } from './mailman/inbox-watcher.js';
@@ -103,6 +104,9 @@ async function main(): Promise<void> {
   // 2b. Host services proxy — sits in front of OneCLI, handles .internal services
   registerMemsearchService();
   startHostServicesProxy(10260);
+
+  // 2c. Inference router — model-prefix routing to Ollama or Anthropic/OneCLI
+  startInferenceRouter(10261);
 
   // 3. Channel adapters
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {
@@ -201,6 +205,7 @@ async function shutdown(signal: string): Promise<void> {
   stopDeliveryPolls();
   stopHostSweep();
   stopHostServicesProxy();
+  stopInferenceRouter();
   stopInboxWatcher();
   stopFeeds();
   await stopCliServer();

@@ -41,6 +41,7 @@ export const createAgent: McpToolDefinition = {
       properties: {
         name: { type: 'string', description: 'Human-readable name (also becomes your destination name for this agent)' },
         instructions: { type: 'string', description: 'CLAUDE.md content for the new agent (personality, role, instructions)' },
+        model: { type: 'string', description: 'Model for the new agent, e.g. "ollama://kimi-k2.6:cloud" or "claude-sonnet-4-6". Inherits parent model if omitted.' },
       },
       required: ['name'],
     },
@@ -58,6 +59,7 @@ export const createAgent: McpToolDefinition = {
         requestId,
         name,
         instructions: (args.instructions as string) || null,
+        model: (args.model as string) || null,
       }),
     });
 
