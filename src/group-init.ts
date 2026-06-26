@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR, GROUPS_DIR } from './config.js';
-import { ensureContainerConfig } from './db/container-configs.js';
+import { ensureContainerConfig, getContainerConfig, updateContainerConfigJson } from './db/container-configs.js';
 import { log } from './log.js';
 import { providerProvidesAgentSurfaces } from './providers/provider-container-registry.js';
 import type { AgentGroup } from './types.js';
@@ -121,6 +121,7 @@ export function initGroupFilesystem(
   // the row already exists (e.g. created by backfill or group creation).
   ensureContainerConfig(group.id);
   initialized.push('container_configs');
+  ensureRtkMount(group.id, initialized);
 
   // 2. data/v2-sessions/<id>/.claude-shared/ — Claude state + per-group skills
   if (defaultSurfaces) {
@@ -138,6 +139,7 @@ export function initGroupFilesystem(
       ensurePreCompactHook(settingsFile, initialized);
     }
     ensureMemsearchHooks(settingsFile, initialized);
+    ensureRtkHook(settingsFile, initialized);
 
     // Skills directory — created empty here; symlinks are synced at spawn
     // time by container-runner.ts based on container.json skills selection.
@@ -157,6 +159,9 @@ export function initGroupFilesystem(
     });
   }
 }
+
+const RTK_HOOK_COMMAND = 'rtk hook claude';
+const RTK_MOUNT = { hostPath: '/Users/lumen/.local/bin/rtk', containerPath: '/usr/local/bin/rtk', readonly: true };
 
 const PRE_COMPACT_COMMAND = 'bun /app/src/compact-instructions.ts';
 const MEMSEARCH_STOP_COMMAND = 'bash /app/memsearch-plugin/hooks/stop.sh';
@@ -234,5 +239,47 @@ function ensureMemsearchHooks(settingsFile: string, initialized: string[]): void
     }
   } catch {
     // Don't break init if settings.json is malformed
+  }
+}
+
+/**
+ * Ensure the rtk PreToolUse hook is present in settings.json and that the rtk
+ * binary is in additional_mounts. Called on every group init so all new and
+ * existing groups pick it up automatically.
+ */
+function ensureRtkHook(settingsFile: string, initialized: string[]): void {
+  try {
+    const raw = fs.readFileSync(settingsFile, 'utf-8');
+    const settings = JSON.parse(raw);
+    const serialized = JSON.stringify(settings.hooks?.PreToolUse ?? []);
+    if (!serialized.includes(RTK_HOOK_COMMAND)) {
+      if (!settings.hooks) settings.hooks = {};
+      if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
+      settings.hooks.PreToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: RTK_HOOK_COMMAND }] });
+      fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+      initialized.push('settings.json (added rtk PreToolUse hook)');
+    }
+  } catch {
+    // Don't break init on malformed settings.json
+  }
+}
+
+/**
+ * Ensure the rtk binary mount is present in container_configs.additional_mounts.
+ * Called by initGroupFilesystem so all new and existing groups pick it up.
+ */
+export function ensureRtkMount(agentGroupId: string, initialized: string[]): void {
+  try {
+    const config = getContainerConfig(agentGroupId);
+    if (!config) return;
+    const mounts: Array<{ hostPath: string; containerPath: string; readonly?: boolean }> =
+      JSON.parse((config.additional_mounts as string) || '[]');
+    if (!mounts.some((m) => m.containerPath === RTK_MOUNT.containerPath)) {
+      mounts.push(RTK_MOUNT);
+      updateContainerConfigJson(agentGroupId, 'additional_mounts', mounts);
+      initialized.push('container_configs (added rtk mount)');
+    }
+  } catch {
+    // Don't break init
   }
 }
