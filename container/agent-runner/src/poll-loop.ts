@@ -1,5 +1,5 @@
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
-import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
+import { getPendingBatch, getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
@@ -114,8 +114,8 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   let isFirstPoll = true;
   while (true) {
     if (config.signal?.aborted) return;
-    // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
-    const messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
+    // One sender's batch per turn: users before agents, oldest first within each tier.
+    const { messages, accumulated } = getPendingBatch(isFirstPoll);
     isFirstPoll = false;
     pollCount++;
 
@@ -221,7 +221,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     // Format messages: passthrough commands get raw text (only if the
     // provider natively handles slash commands), others get XML.
-    const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
+    const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands, accumulated);
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
 
@@ -291,7 +291,11 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
  * passthrough commands are sent raw (no XML wrapping) so the SDK can
  * dispatch them. Otherwise they fall through to standard XML formatting.
  */
-function formatMessagesWithCommands(messages: MessageInRow[], nativeSlashCommands: boolean): string {
+function formatMessagesWithCommands(
+  messages: MessageInRow[],
+  nativeSlashCommands: boolean,
+  accumulated = false,
+): string {
   const parts: string[] = [];
   const normalBatch: MessageInRow[] = [];
 
@@ -301,7 +305,7 @@ function formatMessagesWithCommands(messages: MessageInRow[], nativeSlashCommand
       if (cmdInfo.category === 'passthrough' || cmdInfo.category === 'admin') {
         // Flush normal batch first
         if (normalBatch.length > 0) {
-          parts.push(formatMessages(normalBatch));
+          parts.push(formatMessages(normalBatch, accumulated));
           normalBatch.length = 0;
         }
         // Pass raw command text (no XML wrapping) — SDK handles it natively
@@ -313,7 +317,7 @@ function formatMessagesWithCommands(messages: MessageInRow[], nativeSlashCommand
   }
 
   if (normalBatch.length > 0) {
-    parts.push(formatMessages(normalBatch));
+    parts.push(formatMessages(normalBatch, accumulated));
   }
 
   return parts.join('\n\n');
@@ -378,14 +382,13 @@ export async function processQuery(
           return;
         }
 
-        // Skip system messages (MCP tool responses).
-        // Thread routing is the router's concern — if a message landed in this
-        // session, the agent should see it. Per-thread sessions already isolate
-        // threads into separate containers; shared sessions intentionally merge
-        // everything. Filtering on thread_id here caused deadlocks when the
-        // initial batch and follow-ups had mismatched thread_ids (e.g. a
-        // host-generated welcome trigger with null thread vs a Discord DM reply).
-        const newMessages = pending.filter((m) => m.kind !== 'system');
+        // Chat messages accumulate as pending — the outer loop delivers them one
+        // sender at a time after this turn completes. Only task/webhook messages
+        // are pushed mid-stream (they're async events, not conversational turns).
+        // System messages are MCP responses polled directly by the MCP tool.
+        const newMessages = pending.filter(
+          (m) => m.kind !== 'system' && m.kind !== 'chat' && m.kind !== 'chat-sdk',
+        );
         if (newMessages.length === 0) return;
 
         const newIds = newMessages.map((m) => m.id);

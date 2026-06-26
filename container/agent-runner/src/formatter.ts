@@ -126,9 +126,13 @@ export function extractRouting(messages: MessageInRow[]): RoutingContext {
  *
  * Strips routing fields — the agent never sees platform_id, channel_type, thread_id.
  */
-export function formatMessages(messages: MessageInRow[]): string {
+export function formatMessages(messages: MessageInRow[], accumulated = false): string {
   const header = `<context timezone="${escapeXml(TIMEZONE)}" />\n`;
   if (messages.length === 0) return header;
+
+  const accumulatedNote = accumulated
+    ? 'Message batch arrived while agent was already responding to earlier events.\n\n'
+    : '';
 
   // Group by kind
   const chatMessages = messages.filter((m) => m.kind === 'chat' || m.kind === 'chat-sdk');
@@ -151,19 +155,19 @@ export function formatMessages(messages: MessageInRow[]): string {
     parts.push(...systemMessages.map(formatSystemMessage));
   }
 
-  return header + parts.join('\n\n');
+  return header + accumulatedNote + parts.join('\n\n');
 }
 
 function formatChatMessages(messages: MessageInRow[]): string {
-  // Each `<message id="..." from="...">...</message>` block is self-contained;
-  // concatenating them reads to the agent as a sequence of distinct messages.
+  // Each `<message id="..." from="...">...</message>` block is self-contained.
+  // Multiple messages from the same sender (a batched turn) are separated by
+  // `---` so the agent treats them as distinct messages rather than one blob.
   // Earlier revisions wrapped multi-message batches in an outer `<messages>`
   // envelope, but the Claude Agent SDK responded to that shape with a
   // synthetic stub (`model: "<synthetic>"`, `content: "No response
   // requested."`) instead of calling the API — see #2555 for the full trace.
-  // The fix is simply to drop the wrapper; the single-message path (which
-  // already worked) is now just the N=1 case of the same code.
-  return messages.map(formatSingleChat).join('\n');
+  if (messages.length <= 1) return messages.map(formatSingleChat).join('');
+  return messages.map(formatSingleChat).join('\n\n---\n\n');
 }
 
 function formatSingleChat(msg: MessageInRow): string {

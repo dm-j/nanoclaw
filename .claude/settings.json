@@ -34,7 +34,8 @@
       "Bash(pnpm exec tsc *)",
       "Bash(pnpm --filter nanoclaw run test *)",
       "Bash(curl -s http://localhost:11434/*)",
-      "Bash(lsof -i *)"
+      "Bash(lsof -i *)",
+      "Bash(rtk *)"
     ]
   }
 }

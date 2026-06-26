@@ -51,6 +51,87 @@ function getMaxMessagesPerPrompt(): number {
   }
 }
 
+export interface PendingBatch {
+  messages: MessageInRow[];
+  /** True when other senders also have pending messages — agent is clearing a backlog */
+  accumulated: boolean;
+}
+
+function senderKey(msg: MessageInRow): string {
+  return msg.channel_type === 'agent'
+    ? `agent:${msg.platform_id ?? ''}`
+    : `channel:${msg.channel_type ?? ''}:${msg.platform_id ?? ''}`;
+}
+
+/**
+ * Fetch one sender's batch of pending messages, ordered by priority
+ * (users before agents) then age (oldest first within a tier).
+ *
+ * Returns only chat/chat-sdk/task/webhook messages — system messages are
+ * MCP responses handled by the MCP tool directly, not by the poll loop.
+ * Sets accumulated=true when multiple sender groups are eligible so the
+ * formatter can prepend a "batch arrived while busy" note.
+ */
+export function getPendingBatch(isFirstPoll = false): PendingBatch {
+  const inbound = openInboundDb();
+  const outbound = getOutboundDb();
+  try {
+    const onWakeFilter = hasOnWakeColumn(inbound) ? 'AND (on_wake = 0 OR ?1 = 1)' : '';
+    const allRows = inbound
+      .prepare(
+        `SELECT * FROM messages_in
+         WHERE status = 'pending'
+           AND (kind = 'chat' OR kind = 'chat-sdk' OR kind = 'task' OR kind = 'webhook')
+           AND (process_after IS NULL OR datetime(process_after) <= datetime('now'))
+           ${onWakeFilter}
+         ORDER BY seq ASC
+         LIMIT 200`,
+      )
+      .all(isFirstPoll ? 1 : 0) as MessageInRow[];
+
+    if (allRows.length === 0) return { messages: [], accumulated: false };
+
+    const ackedIds = new Set(
+      (outbound.prepare('SELECT message_id FROM processing_ack').all() as Array<{ message_id: string }>).map(
+        (r) => r.message_id,
+      ),
+    );
+    const pending = allRows.filter((m) => !ackedIds.has(m.id));
+    if (pending.length === 0) return { messages: [], accumulated: false };
+
+    // Group by sender; only groups with trigger=1 are eligible to run
+    interface SenderGroup { priority: 1 | 2; earliestSeq: number; messages: MessageInRow[] }
+    const groups = new Map<string, SenderGroup>();
+    for (const msg of pending) {
+      const key = senderKey(msg);
+      const existing = groups.get(key);
+      if (existing) {
+        existing.messages.push(msg);
+      } else {
+        groups.set(key, {
+          priority: msg.channel_type === 'agent' ? 2 : 1,
+          earliestSeq: msg.seq ?? 0,
+          messages: [msg],
+        });
+      }
+    }
+
+    const eligible = [...groups.values()].filter((g) => g.messages.some((m) => m.trigger === 1));
+    if (eligible.length === 0) return { messages: [], accumulated: false };
+
+    // Users (priority 1) before agents (priority 2); oldest first within a tier
+    eligible.sort((a, b) => a.priority - b.priority || a.earliestSeq - b.earliestSeq);
+
+    const chosen = eligible[0];
+    return {
+      messages: chosen.messages.slice(0, getMaxMessagesPerPrompt()),
+      accumulated: eligible.length > 1,
+    };
+  } finally {
+    inbound.close();
+  }
+}
+
 /**
  * Fetch pending messages that are due for processing.
  * Reads from inbound.db (read-only), filters against processing_ack in outbound.db
