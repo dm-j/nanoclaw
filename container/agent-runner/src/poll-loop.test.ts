@@ -264,11 +264,11 @@ describe('getPendingBatch', () => {
     expect(messages.map((m) => m.id)).toEqual(['m1', 'm2']);
   });
 
-  it('first poll: only on_wake=1 messages returned', () => {
+  it('first poll: returns both on_wake=0 and on_wake=1 messages', () => {
     insertRouted('wake', { text: 'Resuming.' }, { onWake: 1 });
     insertRouted('norm', { text: 'hello' }, { onWake: 0 });
     const { messages } = getPendingBatch(true);
-    expect(messages.map((m) => m.id)).toEqual(['wake']);
+    expect(messages.map((m) => m.id).sort()).toEqual(['norm', 'wake']);
   });
 
   it('subsequent poll: on_wake=1 messages skipped', () => {
