@@ -16,8 +16,8 @@ A lightweight HTTP proxy on the host (port **10261**) sits between every agent c
 container
   ANTHROPIC_BASE_URL=http://host.docker.internal:10261
     → inference-router :10261
-        ollama://...   → localhost:11434  (plain HTTP)
-        anthropic://... → OneCLI :10255   (CONNECT tunnel, secrets injected)
+        ollama-...     → localhost:11434  (plain HTTP)
+        anthropic-...  → OneCLI :10255   (CONNECT tunnel, secrets injected)
         <no prefix>    → OneCLI :10255   (default, backward compat)
 ```
 
