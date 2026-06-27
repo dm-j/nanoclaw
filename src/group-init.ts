@@ -272,8 +272,9 @@ export function ensureRtkMount(agentGroupId: string, initialized: string[]): voi
   try {
     const config = getContainerConfig(agentGroupId);
     if (!config) return;
-    const mounts: Array<{ hostPath: string; containerPath: string; readonly?: boolean }> =
-      JSON.parse((config.additional_mounts as string) || '[]');
+    const mounts: Array<{ hostPath: string; containerPath: string; readonly?: boolean }> = JSON.parse(
+      (config.additional_mounts as string) || '[]',
+    );
     if (!mounts.some((m) => m.containerPath === RTK_MOUNT.containerPath)) {
       mounts.push(RTK_MOUNT);
       updateContainerConfigJson(agentGroupId, 'additional_mounts', mounts);
