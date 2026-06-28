@@ -21,7 +21,13 @@ import {
 import { materializeContainerJson } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
-import { CONTAINER_HOST_GATEWAY, CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
+import {
+  CONTAINER_HOST_GATEWAY,
+  CONTAINER_RUNTIME_BIN,
+  hostGatewayArgs,
+  readonlyMountArgs,
+  stopContainer,
+} from './container-runtime.js';
 import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
@@ -101,29 +107,40 @@ function applyOneCLIContainerConfig(args: string[], config: OneCLIContainerConfi
     }
   }
 
-  const caPath = path.join(os.tmpdir(), `onecli-ca-${Date.now()}.pem`);
-  fs.writeFileSync(caPath, config.caCertificate);
-  args.push('-v', `${caPath}:${config.caCertificateContainerPath}:ro`);
+  // Apple Container only supports directory bind mounts (not file mounts).
+  // Write all files into a staging dir mounted at /tmp/nanoclaw-stage/, then
+  // let entrypoint.sh bind-mount each to its target path (requires root start).
+  const stageDir = path.join(os.tmpdir(), `nanoclaw-stage-${Date.now()}`);
+  fs.mkdirSync(stageDir, { recursive: true });
+  const stageMounts: Array<{ source: string; target: string }> = [];
 
-  // Combined CA bundle for tools that need SSL_CERT_FILE
+  const caStage = path.join(stageDir, 'onecli-ca.pem');
+  fs.writeFileSync(caStage, config.caCertificate);
+  stageMounts.push({ source: '/tmp/nanoclaw-stage/onecli-ca.pem', target: config.caCertificateContainerPath });
+
   try {
     const systemCa = fs.readFileSync('/etc/ssl/cert.pem', 'utf-8');
-    const combinedPath = path.join(os.tmpdir(), `onecli-combined-ca-${Date.now()}.pem`);
-    fs.writeFileSync(combinedPath, systemCa + '\n' + config.caCertificate);
+    const combinedStage = path.join(stageDir, 'onecli-combined-ca.pem');
+    fs.writeFileSync(combinedStage, systemCa + '\n' + config.caCertificate);
     args.push('-e', 'SSL_CERT_FILE=/tmp/onecli-combined-ca.pem');
     args.push('-e', 'DENO_CERT=/tmp/onecli-combined-ca.pem');
-    args.push('-v', `${combinedPath}:/tmp/onecli-combined-ca.pem:ro`);
+    stageMounts.push({ source: '/tmp/nanoclaw-stage/onecli-combined-ca.pem', target: '/tmp/onecli-combined-ca.pem' });
   } catch {
     // No system CA bundle available — single cert only
   }
 
   if (config.credentialStubs?.length) {
-    for (const stub of config.credentialStubs) {
-      const stubPath = path.join(os.tmpdir(), `onecli-stub-${path.basename(stub.containerPath)}`);
-      fs.writeFileSync(stubPath, stub.content);
-      args.push('-v', `${stubPath}:${stub.containerPath}:ro`);
+    for (let i = 0; i < config.credentialStubs.length; i++) {
+      const stub = config.credentialStubs[i];
+      const stubName = `stub-${i}-${path.basename(stub.containerPath)}`;
+      fs.writeFileSync(path.join(stageDir, stubName), stub.content);
+      stageMounts.push({ source: `/tmp/nanoclaw-stage/${stubName}`, target: stub.containerPath });
     }
   }
+
+  // Mount staging dir and pass bind-mount map to entrypoint
+  args.push(...readonlyMountArgs(stageDir, '/tmp/nanoclaw-stage'));
+  args.push('-e', `NANOCLAW_STAGE_MOUNTS=${JSON.stringify(stageMounts)}`);
 }
 
 /** Active containers tracked by session ID. */
@@ -578,7 +595,7 @@ async function buildContainerArgs(
     if (mount.readonly) {
       args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
     } else {
-      args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
+      args.push('--mount', `type=bind,source=${mount.hostPath},target=${mount.containerPath}`);
     }
   }
 
