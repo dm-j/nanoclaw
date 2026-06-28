@@ -23,7 +23,11 @@ import path from 'path';
 
 import { isSafeAttachmentName } from '../../attachment-safety.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
-import { getInboundSourceSessionId, getMostRecentPeerSourceSessionId } from '../../db/session-db.js';
+import {
+  getInboundSourceSessionId,
+  getInboundTimestamp,
+  getMostRecentPeerSourceSessionId,
+} from '../../db/session-db.js';
 import { getSession } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
 import { log } from '../../log.js';
@@ -294,6 +298,24 @@ export async function performAgentRoute(
   const targetSession = resolveTargetSession(msg, session, targetAgentGroupId);
   const a2aMsgId = `a2a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+  // Append elapsed time to replies so the recipient can notice slow tasks.
+  if (msg.in_reply_to) {
+    const srcDb = openInboundDb(session.agent_group_id, session.id);
+    try {
+      const dispatched = getInboundTimestamp(srcDb, msg.in_reply_to);
+      if (dispatched) {
+        const elapsedMs = Date.now() - new Date(dispatched).getTime();
+        const elapsedStr =
+          elapsedMs >= 60_000
+            ? `${Math.round(elapsedMs / 60_000)}m${Math.round((elapsedMs % 60_000) / 1000)}s`
+            : `${Math.round(elapsedMs / 1000)}s`;
+        msg = { ...msg, content: appendElapsed(msg.content, elapsedStr) };
+      }
+    } finally {
+      srcDb.close();
+    }
+  }
+
   // If the source message references files (via `send_file`), forward the
   // bytes from the source's outbox into the target's inbox so the target
   // agent can actually see and re-send them. Without this, agent-to-agent
@@ -376,4 +398,16 @@ function countForwardedFiles(contentStr: string): number {
   } catch {
     return 0;
   }
+}
+
+function appendElapsed(contentStr: string, elapsed: string): string {
+  const suffix = `\n\n_(took ${elapsed})_`;
+  try {
+    const parsed = JSON.parse(contentStr) as Record<string, unknown>;
+    if (typeof parsed.text === 'string') {
+      parsed.text = parsed.text + suffix;
+      return JSON.stringify(parsed);
+    }
+  } catch {}
+  return contentStr + suffix;
 }

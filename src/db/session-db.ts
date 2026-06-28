@@ -337,6 +337,13 @@ export function migrateMessagesInTable(db: Database.Database): void {
  * pre-migration a2a inbound). Used by a2a routing to route replies back to
  * the originating session.
  */
+export function getInboundTimestamp(db: Database.Database, messageId: string): string | null {
+  const row = db.prepare('SELECT timestamp FROM messages_in WHERE id = ?').get(messageId) as
+    | { timestamp: string | null }
+    | undefined;
+  return row?.timestamp ?? null;
+}
+
 export function getInboundSourceSessionId(db: Database.Database, messageId: string): string | null {
   const row = db.prepare('SELECT source_session_id FROM messages_in WHERE id = ?').get(messageId) as
     | { source_session_id: string | null }

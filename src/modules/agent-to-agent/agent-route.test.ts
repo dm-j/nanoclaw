@@ -217,7 +217,7 @@ describe('routeAgentMessage return-path', () => {
     // The reply lands in S1 (originator) even though S2 is newer.
     expect(s1Rows).toHaveLength(1);
     expect(s1Rows[0].platform_id).toBe(B);
-    expect(JSON.parse(s1Rows[0].content).text).toBe('pong');
+    expect(JSON.parse(s1Rows[0].content).text).toMatch(/^pong/);
     expect(s2Rows).toHaveLength(0);
   });
 
