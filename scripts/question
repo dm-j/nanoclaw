@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# question — query the MBIF vault via the seeker agent
+#
+# Usage:
+#   question "When is David's birthday?"
+#   question "When is my birthday?" --ask-as David
+#   question "What is the Vector project?" --bullet
+#   question --help
+
+VAULT_PATH="/path/to/mbif-vault"   # ← set this
+SEEKER_AGENT="seeker"
+
+USAGE="Usage: question \"<question>\" [--ask-as <name>] [--bullet] [--help]
+
+  --ask-as <name>   Resolve first-person references to this person in the vault
+  --bullet          Format the answer as bullet points"
+
+if [[ -z "$VAULT_PATH" ]]; then
+  echo "error: VAULT_PATH is not configured in this script" >&2
+  exit 1
+fi
+
+QUESTION=""
+ASK_AS=""
+BULLET=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h)
+      echo "$USAGE"; exit 0 ;;
+    --ask-as)
+      ASK_AS="$2"; shift 2 ;;
+    --bullet)
+      BULLET=true; shift ;;
+    -*)
+      echo "Unknown option: $1" >&2; echo "$USAGE" >&2; exit 1 ;;
+    *)
+      QUESTION="$1"; shift ;;
+  esac
+done
+
+if [[ -z "$QUESTION" ]]; then
+  echo "error: question is required" >&2
+  echo "$USAGE" >&2
+  exit 1
+fi
+
+PROMPT="Answer the following question using the vault contents. Always cite your sources (note title and section) and state your confidence (high / medium / low)."
+
+if [[ -n "$ASK_AS" ]]; then
+  PROMPT="$PROMPT
+
+Context: the question is being asked by or on behalf of \"$ASK_AS\". Resolve first-person references (\"my\", \"I\", \"me\") to this person."
+fi
+
+if [[ "$BULLET" == true ]]; then
+  PROMPT="$PROMPT
+
+Format the answer as bullet points."
+fi
+
+PROMPT="$PROMPT
+
+Question: $QUESTION"
+
+cd "$VAULT_PATH" || { echo "error: cannot cd to vault at $VAULT_PATH" >&2; exit 1; }
+
+exec claude -p --agent "$SEEKER_AGENT" "$PROMPT"
