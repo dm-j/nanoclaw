@@ -35,7 +35,7 @@ fi
 echo "Building NanoClaw agent container image..."
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
-${CONTAINER_RUNTIME} build "${BUILD_ARGS[@]}" -t "${IMAGE_NAME}:${TAG}" .
+${CONTAINER_RUNTIME} build "${BUILD_ARGS[@]}" ${CONTAINER_BUILD_MEMORY:+-m "$CONTAINER_BUILD_MEMORY"} -t "${IMAGE_NAME}:${TAG}" .
 
 echo ""
 echo "Build complete!"
