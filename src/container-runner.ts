@@ -100,7 +100,10 @@ function applyOneCLIContainerConfig(args: string[], config: OneCLIContainerConfi
     // directly at OneCLI. The proxy forwards CONNECT tunnels to OneCLI
     // and handles .internal services locally.
     if (/^https?_proxy$/i.test(key) && value.includes(':10255')) {
-      const rewritten = value.replace(':10255', `:${HOST_SERVICES_PROXY_PORT}`);
+      // Rewrite both the port and host: containers reach the host-services-proxy
+      // at CONTAINER_HOST_GATEWAY (bridge gateway for Apple Container, host.docker.internal
+      // equivalent) rather than 127.0.0.1, which isn't reachable from VMs.
+      const rewritten = value.replace(/https?:\/\/[^:]+:\d+/, `http://${CONTAINER_HOST_GATEWAY}:${HOST_SERVICES_PROXY_PORT}`);
       args.push('-e', `${key}=${rewritten}`);
     } else {
       args.push('-e', `${key}=${value}`);
