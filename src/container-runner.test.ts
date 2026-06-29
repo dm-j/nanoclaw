@@ -40,7 +40,7 @@ describe('buildContainerArgs ordering invariant (structural)', () => {
   it('applies the OneCLI gateway after the volume mounts', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src', 'container-runner.ts'), 'utf-8');
     const mountsLoop = src.indexOf('for (const mount of mounts)');
-    const gatewayApply = src.indexOf('applyOneCLIContainerConfig(args, onecliConfig)');
+    const gatewayApply = src.indexOf('applyOneCLIContainerConfig(args, onecliConfig, fileMounts)');
     expect(mountsLoop).toBeGreaterThan(-1);
     expect(gatewayApply).toBeGreaterThan(-1);
     expect(gatewayApply).toBeGreaterThan(mountsLoop);

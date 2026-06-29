@@ -94,7 +94,11 @@ async function onecliGetContainerConfig(agent: string): Promise<OneCLIContainerC
 
 const HOST_SERVICES_PROXY_PORT = 10260;
 
-function applyOneCLIContainerConfig(args: string[], config: OneCLIContainerConfig): void {
+function applyOneCLIContainerConfig(
+  args: string[],
+  config: OneCLIContainerConfig,
+  extraFileMounts: VolumeMount[],
+): void {
   for (const [key, value] of Object.entries(config.env)) {
     // Rewrite proxy URLs to point at the host services proxy instead of
     // directly at OneCLI. The proxy forwards CONNECT tunnels to OneCLI
@@ -103,7 +107,10 @@ function applyOneCLIContainerConfig(args: string[], config: OneCLIContainerConfi
       // Rewrite both the port and host: containers reach the host-services-proxy
       // at CONTAINER_HOST_GATEWAY (bridge gateway for Apple Container, host.docker.internal
       // equivalent) rather than 127.0.0.1, which isn't reachable from VMs.
-      const rewritten = value.replace(/https?:\/\/[^:]+:\d+/, `http://${CONTAINER_HOST_GATEWAY}:${HOST_SERVICES_PROXY_PORT}`);
+      const rewritten = value.replace(
+        /https?:\/\/[^:]+:\d+/,
+        `http://${CONTAINER_HOST_GATEWAY}:${HOST_SERVICES_PROXY_PORT}`,
+      );
       args.push('-e', `${key}=${rewritten}`);
     } else {
       args.push('-e', `${key}=${value}`);
@@ -111,11 +118,20 @@ function applyOneCLIContainerConfig(args: string[], config: OneCLIContainerConfi
   }
 
   // Apple Container only supports directory bind mounts (not file mounts).
-  // Write all files into a staging dir mounted at /tmp/nanoclaw-stage/, then
-  // let entrypoint.sh bind-mount each to its target path (requires root start).
+  // Write all files (OneCLI certs, stubs, and any VolumeMount file entries)
+  // into a staging dir mounted at /tmp/nanoclaw-stage/, then let entrypoint.sh
+  // bind-mount each to its target path (requires root start).
   const stageDir = path.join(os.tmpdir(), `nanoclaw-stage-${Date.now()}`);
   fs.mkdirSync(stageDir, { recursive: true });
   const stageMounts: Array<{ source: string; target: string }> = [];
+
+  // Extra file mounts (container.json, CLAUDE.md, memsearch stub, etc.)
+  for (let i = 0; i < extraFileMounts.length; i++) {
+    const m = extraFileMounts[i];
+    const stageName = `file-${i}-${path.basename(m.hostPath)}`;
+    fs.copyFileSync(m.hostPath, path.join(stageDir, stageName));
+    stageMounts.push({ source: `/tmp/nanoclaw-stage/${stageName}`, target: m.containerPath });
+  }
 
   const caStage = path.join(stageDir, 'onecli-ca.pem');
   fs.writeFileSync(caStage, config.caCertificate);
@@ -593,12 +609,19 @@ async function buildContainerArgs(
     args.push('-e', 'HOME=/home/node');
   }
 
-  // Volume mounts
+  // Volume mounts — Apple Container only supports directory bind mounts.
+  // File mounts are collected and routed through the staging dir instead.
+  const fileMounts: VolumeMount[] = [];
   for (const mount of mounts) {
-    if (mount.readonly) {
-      args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
+    const isDir = fs.statSync(mount.hostPath).isDirectory();
+    if (isDir) {
+      if (mount.readonly) {
+        args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
+      } else {
+        args.push('--mount', `type=bind,source=${mount.hostPath},target=${mount.containerPath}`);
+      }
     } else {
-      args.push('--mount', `type=bind,source=${mount.hostPath},target=${mount.containerPath}`);
+      fileMounts.push(mount);
     }
   }
 
@@ -615,7 +638,7 @@ async function buildContainerArgs(
     await onecliEnsureAgent(agentGroup.name, agentIdentifier);
   }
   const onecliConfig = await onecliGetContainerConfig(agentIdentifier || '');
-  applyOneCLIContainerConfig(args, onecliConfig);
+  applyOneCLIContainerConfig(args, onecliConfig, fileMounts);
   log.info('OneCLI gateway applied', { containerName });
 
   // Default inference base URL: all containers route through the inference router,
