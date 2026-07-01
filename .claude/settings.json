@@ -3,6 +3,16 @@
     "enabled": false
   },
   "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/precompact-gotcha.sh"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
@@ -35,7 +45,10 @@
       "Bash(pnpm --filter nanoclaw run test *)",
       "Bash(curl -s http://localhost:11434/*)",
       "Bash(lsof -i *)",
-      "Bash(rtk *)"
+      "Bash(rtk *)",
+      "Bash(container ls *)",
+      "Bash(container system status *)",
+      "Bash(ncl groups list *)"
     ]
   }
 }
