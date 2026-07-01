@@ -56,7 +56,6 @@ function forwardToOllama(req: http.IncomingMessage, res: http.ServerResponse, bo
   upstream.end();
 }
 
-
 function forwardToAnthropic(req: http.IncomingMessage, res: http.ServerResponse, body: Buffer): void {
   // CONNECT tunnel through OneCLI so secrets are injected on the wire.
   const target = 'api.anthropic.com:443';
@@ -172,7 +171,16 @@ export function startInferenceRouter(port: number): void {
       // Non-JSON body (health checks, etc.) — forward as-is to Anthropic
     }
 
-    const done = (() => { let called = false; const fn = trackRequest(resolvedModel, agentHint); return () => { if (!called) { called = true; fn(); } }; })();
+    const done = (() => {
+      let called = false;
+      const fn = trackRequest(resolvedModel, agentHint);
+      return () => {
+        if (!called) {
+          called = true;
+          fn();
+        }
+      };
+    })();
     res.on('finish', done);
     res.on('close', done);
 
