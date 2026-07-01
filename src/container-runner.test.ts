@@ -40,7 +40,7 @@ describe('buildContainerArgs ordering invariant (structural)', () => {
   it('applies the OneCLI gateway after the volume mounts', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src', 'container-runner.ts'), 'utf-8');
     const mountsLoop = src.indexOf('for (const mount of mounts)');
-    const gatewayApply = src.indexOf('applyOneCLIContainerConfig(args, onecliConfig)');
+    const gatewayApply = src.indexOf('applyOneCLIContainerConfig(args, onecliConfig, fileMounts)');
     expect(mountsLoop).toBeGreaterThan(-1);
     expect(gatewayApply).toBeGreaterThan(-1);
     expect(gatewayApply).toBeGreaterThan(mountsLoop);
@@ -70,8 +70,8 @@ describe('inference router env injection (structural)', () => {
   // still override if needed.
   it('injects ANTHROPIC_BASE_URL and NO_PROXY before per-group env overrides', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src', 'container-runner.ts'), 'utf-8');
-    const routerUrl = src.indexOf('ANTHROPIC_BASE_URL=http://host.docker.internal:10261');
-    const noProxy = src.indexOf('NO_PROXY=host.docker.internal');
+    const routerUrl = src.indexOf('ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:10261');
+    const noProxy = src.indexOf('NO_PROXY=${CONTAINER_HOST_GATEWAY}');
     const perGroupEnv = src.indexOf('containerConfig.env');
     expect(routerUrl).toBeGreaterThan(-1);
     expect(noProxy).toBeGreaterThan(-1);

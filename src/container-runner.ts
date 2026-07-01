@@ -21,7 +21,13 @@ import {
 import { materializeContainerJson } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
-import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
+import {
+  CONTAINER_HOST_GATEWAY,
+  CONTAINER_RUNTIME_BIN,
+  hostGatewayArgs,
+  readonlyMountArgs,
+  stopContainer,
+} from './container-runtime.js';
 import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
@@ -88,42 +94,74 @@ async function onecliGetContainerConfig(agent: string): Promise<OneCLIContainerC
 
 const HOST_SERVICES_PROXY_PORT = 10260;
 
-function applyOneCLIContainerConfig(args: string[], config: OneCLIContainerConfig): void {
+function applyOneCLIContainerConfig(
+  args: string[],
+  config: OneCLIContainerConfig,
+  extraFileMounts: VolumeMount[],
+): void {
   for (const [key, value] of Object.entries(config.env)) {
     // Rewrite proxy URLs to point at the host services proxy instead of
     // directly at OneCLI. The proxy forwards CONNECT tunnels to OneCLI
     // and handles .internal services locally.
     if (/^https?_proxy$/i.test(key) && value.includes(':10255')) {
-      const rewritten = value.replace(':10255', `:${HOST_SERVICES_PROXY_PORT}`);
+      // Rewrite both the port and host: containers reach the host-services-proxy
+      // at CONTAINER_HOST_GATEWAY (bridge gateway for Apple Container, host.docker.internal
+      // equivalent) rather than 127.0.0.1, which isn't reachable from VMs.
+      const rewritten = value.replace(
+        /https?:\/\/[^:]+:\d+/,
+        `http://${CONTAINER_HOST_GATEWAY}:${HOST_SERVICES_PROXY_PORT}`,
+      );
       args.push('-e', `${key}=${rewritten}`);
     } else {
       args.push('-e', `${key}=${value}`);
     }
   }
 
-  const caPath = path.join(os.tmpdir(), `onecli-ca-${Date.now()}.pem`);
-  fs.writeFileSync(caPath, config.caCertificate);
-  args.push('-v', `${caPath}:${config.caCertificateContainerPath}:ro`);
+  // Apple Container only supports directory bind mounts (not file mounts).
+  // Write all files (OneCLI certs, stubs, and any VolumeMount file entries)
+  // into a staging dir mounted at /tmp/nanoclaw-stage/, then let entrypoint.sh
+  // bind-mount each to its target path (requires root start).
+  const stageDir = path.join(os.tmpdir(), `nanoclaw-stage-${Date.now()}`);
+  fs.mkdirSync(stageDir, { recursive: true });
+  const stageMounts: Array<{ source: string; target: string }> = [];
 
-  // Combined CA bundle for tools that need SSL_CERT_FILE
+  // Extra file mounts (container.json, CLAUDE.md, memsearch stub, etc.)
+  for (let i = 0; i < extraFileMounts.length; i++) {
+    const m = extraFileMounts[i];
+    const stageName = `file-${i}-${path.basename(m.hostPath)}`;
+    const stagePath = path.join(stageDir, stageName);
+    fs.copyFileSync(m.hostPath, stagePath);
+    fs.chmodSync(stagePath, fs.statSync(m.hostPath).mode);
+    stageMounts.push({ source: `/tmp/nanoclaw-stage/${stageName}`, target: m.containerPath });
+  }
+
+  const caStage = path.join(stageDir, 'onecli-ca.pem');
+  fs.writeFileSync(caStage, config.caCertificate);
+  stageMounts.push({ source: '/tmp/nanoclaw-stage/onecli-ca.pem', target: config.caCertificateContainerPath });
+
   try {
     const systemCa = fs.readFileSync('/etc/ssl/cert.pem', 'utf-8');
-    const combinedPath = path.join(os.tmpdir(), `onecli-combined-ca-${Date.now()}.pem`);
-    fs.writeFileSync(combinedPath, systemCa + '\n' + config.caCertificate);
+    const combinedStage = path.join(stageDir, 'onecli-combined-ca.pem');
+    fs.writeFileSync(combinedStage, systemCa + '\n' + config.caCertificate);
     args.push('-e', 'SSL_CERT_FILE=/tmp/onecli-combined-ca.pem');
     args.push('-e', 'DENO_CERT=/tmp/onecli-combined-ca.pem');
-    args.push('-v', `${combinedPath}:/tmp/onecli-combined-ca.pem:ro`);
+    stageMounts.push({ source: '/tmp/nanoclaw-stage/onecli-combined-ca.pem', target: '/tmp/onecli-combined-ca.pem' });
   } catch {
     // No system CA bundle available — single cert only
   }
 
   if (config.credentialStubs?.length) {
-    for (const stub of config.credentialStubs) {
-      const stubPath = path.join(os.tmpdir(), `onecli-stub-${path.basename(stub.containerPath)}`);
-      fs.writeFileSync(stubPath, stub.content);
-      args.push('-v', `${stubPath}:${stub.containerPath}:ro`);
+    for (let i = 0; i < config.credentialStubs.length; i++) {
+      const stub = config.credentialStubs[i];
+      const stubName = `stub-${i}-${path.basename(stub.containerPath)}`;
+      fs.writeFileSync(path.join(stageDir, stubName), stub.content);
+      stageMounts.push({ source: `/tmp/nanoclaw-stage/${stubName}`, target: stub.containerPath });
     }
   }
+
+  // Mount staging dir and pass bind-mount map to entrypoint
+  args.push(...readonlyMountArgs(stageDir, '/tmp/nanoclaw-stage'));
+  args.push('-e', `NANOCLAW_STAGE_MOUNTS=${JSON.stringify(stageMounts)}`);
 }
 
 /** Active containers tracked by session ID. */
@@ -430,10 +468,12 @@ export function buildMounts(
     mounts.push({ hostPath: skillsSrc, containerPath: '/app/skills', readonly: true });
   }
 
-  // Memsearch stub — relays CLI calls to the host services proxy
-  const memsearchStub = path.join(projectRoot, 'container', 'memsearch-stub', 'memsearch');
-  if (fs.existsSync(memsearchStub)) {
-    mounts.push({ hostPath: memsearchStub, containerPath: '/usr/local/bin/memsearch', readonly: true });
+  // Memsearch stub — relays CLI calls to the host services proxy.
+  // Mount the whole directory (Apple Container only supports dir mounts) and
+  // let buildContainerArgs add it to PATH via MEMSEARCH_STUB_BIN env.
+  const memsearchStubDir = path.join(projectRoot, 'container', 'memsearch-stub');
+  if (fs.existsSync(memsearchStubDir)) {
+    mounts.push({ hostPath: memsearchStubDir, containerPath: '/opt/nanoclaw-stubs', readonly: true });
   }
 
   // Memsearch ccplugin — hooks for memory capture and search
@@ -573,12 +613,19 @@ async function buildContainerArgs(
     args.push('-e', 'HOME=/home/node');
   }
 
-  // Volume mounts
+  // Volume mounts — Apple Container only supports directory bind mounts.
+  // File mounts are collected and routed through the staging dir instead.
+  const fileMounts: VolumeMount[] = [];
   for (const mount of mounts) {
-    if (mount.readonly) {
-      args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
+    const isDir = fs.statSync(mount.hostPath).isDirectory();
+    if (isDir) {
+      if (mount.readonly) {
+        args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
+      } else {
+        args.push('--mount', `type=bind,source=${mount.hostPath},target=${mount.containerPath}`);
+      }
     } else {
-      args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
+      fileMounts.push(mount);
     }
   }
 
@@ -595,17 +642,19 @@ async function buildContainerArgs(
     await onecliEnsureAgent(agentGroup.name, agentIdentifier);
   }
   const onecliConfig = await onecliGetContainerConfig(agentIdentifier || '');
-  applyOneCLIContainerConfig(args, onecliConfig);
+  applyOneCLIContainerConfig(args, onecliConfig, fileMounts);
   log.info('OneCLI gateway applied', { containerName });
 
   // Default inference base URL: all containers route through the inference router,
   // which strips model-name prefixes and dispatches to Ollama or Anthropic/OneCLI.
-  // NO_PROXY ensures host.docker.internal bypasses HTTP_PROXY (injected by OneCLI)
+  // NO_PROXY ensures the host gateway bypasses HTTP_PROXY (injected by OneCLI)
   // so the plain-HTTP request to :10261 isn't intercepted by the host-services-proxy.
-  args.push('-e', 'ANTHROPIC_BASE_URL=http://host.docker.internal:10261');
+  args.push('-e', `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:10261`);
   args.push('-e', 'ANTHROPIC_API_KEY=INJECTED_BY_ONECLI');
-  args.push('-e', 'NO_PROXY=host.docker.internal');
-  args.push('-e', 'no_proxy=host.docker.internal');
+  args.push('-e', `NO_PROXY=${CONTAINER_HOST_GATEWAY}`);
+  args.push('-e', `no_proxy=${CONTAINER_HOST_GATEWAY}`);
+  // Prepend stub bin dir so memsearch (and any future stubs) are in PATH.
+  args.push('-e', 'PATH=/opt/nanoclaw-stubs:/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin');
 
   // Per-agent-group env overrides (file-only field in container.json).
   // Applied after OneCLI so they win over proxy-injected values.

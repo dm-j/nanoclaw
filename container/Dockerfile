@@ -51,6 +51,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         python3-minimal \
         tini \
         unzip \
+        util-linux \
     && if [ "$INSTALL_CJK_FONTS" = "true" ]; then \
         apt-get install -y --no-install-recommends fonts-noto-cjk; \
        fi \
@@ -123,9 +124,10 @@ RUN mkdir -p /workspace/group /workspace/extra && \
     chown -R node:node /workspace && \
     chmod 777 /home/node
 
-USER node
 WORKDIR /workspace/group
 
 # tini is PID 1, reaps zombies, forwards signals cleanly. entrypoint.sh does
-# `exec bun ...` so bun runs as tini's direct child.
+# `exec bun ...` (via setpriv to drop from root to node) so bun runs as
+# tini's direct child. Container starts as root so entrypoint.sh can
+# mount --bind files from the staging dir to their target paths before dropping.
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]
