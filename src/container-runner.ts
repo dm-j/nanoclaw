@@ -129,7 +129,9 @@ function applyOneCLIContainerConfig(
   for (let i = 0; i < extraFileMounts.length; i++) {
     const m = extraFileMounts[i];
     const stageName = `file-${i}-${path.basename(m.hostPath)}`;
-    fs.copyFileSync(m.hostPath, path.join(stageDir, stageName));
+    const stagePath = path.join(stageDir, stageName);
+    fs.copyFileSync(m.hostPath, stagePath);
+    fs.chmodSync(stagePath, fs.statSync(m.hostPath).mode);
     stageMounts.push({ source: `/tmp/nanoclaw-stage/${stageName}`, target: m.containerPath });
   }
 
@@ -466,10 +468,12 @@ export function buildMounts(
     mounts.push({ hostPath: skillsSrc, containerPath: '/app/skills', readonly: true });
   }
 
-  // Memsearch stub — relays CLI calls to the host services proxy
-  const memsearchStub = path.join(projectRoot, 'container', 'memsearch-stub', 'memsearch');
-  if (fs.existsSync(memsearchStub)) {
-    mounts.push({ hostPath: memsearchStub, containerPath: '/usr/local/bin/memsearch', readonly: true });
+  // Memsearch stub — relays CLI calls to the host services proxy.
+  // Mount the whole directory (Apple Container only supports dir mounts) and
+  // let buildContainerArgs add it to PATH via MEMSEARCH_STUB_BIN env.
+  const memsearchStubDir = path.join(projectRoot, 'container', 'memsearch-stub');
+  if (fs.existsSync(memsearchStubDir)) {
+    mounts.push({ hostPath: memsearchStubDir, containerPath: '/opt/nanoclaw-stubs', readonly: true });
   }
 
   // Memsearch ccplugin — hooks for memory capture and search
@@ -649,6 +653,8 @@ async function buildContainerArgs(
   args.push('-e', 'ANTHROPIC_API_KEY=INJECTED_BY_ONECLI');
   args.push('-e', `NO_PROXY=${CONTAINER_HOST_GATEWAY}`);
   args.push('-e', `no_proxy=${CONTAINER_HOST_GATEWAY}`);
+  // Prepend stub bin dir so memsearch (and any future stubs) are in PATH.
+  args.push('-e', 'PATH=/opt/nanoclaw-stubs:/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin');
 
   // Per-agent-group env overrides (file-only field in container.json).
   // Applied after OneCLI so they win over proxy-injected values.

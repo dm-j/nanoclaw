@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Relay memsearch CLI to the host services proxy.
 # The proxy resolves agent identity from our container IP
 # and scopes all operations to our agent group's memory directory.

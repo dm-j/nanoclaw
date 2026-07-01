@@ -107,10 +107,7 @@ describe('cleanupOrphans', () => {
 
     cleanupOrphans();
 
-    expect(mockExecSync).toHaveBeenCalledWith(
-      `${CONTAINER_RUNTIME_BIN} ls --format json`,
-      expect.any(Object),
-    );
+    expect(mockExecSync).toHaveBeenCalledWith(`${CONTAINER_RUNTIME_BIN} ls --format json`, expect.any(Object));
   });
 
   it('stops orphaned nanoclaw containers', () => {
@@ -131,9 +128,7 @@ describe('cleanupOrphans', () => {
   });
 
   it('does not stop containers from a different install', () => {
-    const containers = [
-      { name: 'nanoclaw-other-999', labels: { [labelKey]: 'different-slug' } },
-    ];
+    const containers = [{ name: 'nanoclaw-other-999', labels: { [labelKey]: 'different-slug' } }];
     mockExecSync.mockReturnValueOnce(JSON.stringify(containers));
 
     cleanupOrphans();
@@ -170,7 +165,9 @@ describe('cleanupOrphans', () => {
       { name: 'nanoclaw-b-2', labels: { [labelKey]: labelVal } },
     ];
     mockExecSync.mockReturnValueOnce(JSON.stringify(containers));
-    mockExecSync.mockImplementationOnce(() => { throw new Error('already stopped'); });
+    mockExecSync.mockImplementationOnce(() => {
+      throw new Error('already stopped');
+    });
     mockExecSync.mockReturnValueOnce('');
 
     cleanupOrphans(); // should not throw

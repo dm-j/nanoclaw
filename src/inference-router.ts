@@ -23,7 +23,8 @@ type Backend = { kind: 'ollama' } | { kind: 'anthropic' };
 
 export function parsePrefix(model: string): { backend: Backend; model: string } {
   if (model.startsWith('ollama-')) {
-    return { backend: { kind: 'ollama' }, model: model.slice('ollama-'.length) };
+    const stripped = model.slice('ollama-'.length);
+    return { backend: { kind: 'ollama' }, model: stripped };
   }
   if (model.startsWith('anthropic-')) {
     return { backend: { kind: 'anthropic' }, model: model.slice('anthropic-'.length) };
@@ -54,6 +55,7 @@ function forwardToOllama(req: http.IncomingMessage, res: http.ServerResponse, bo
   upstream.write(body);
   upstream.end();
 }
+
 
 function forwardToAnthropic(req: http.IncomingMessage, res: http.ServerResponse, body: Buffer): void {
   // CONNECT tunnel through OneCLI so secrets are injected on the wire.
@@ -109,6 +111,31 @@ function forwardToAnthropic(req: http.IncomingMessage, res: http.ServerResponse,
   });
 }
 
+// Per-model concurrency tracking: model → count of in-flight requests
+const activeRequests = new Map<string, number>();
+
+function trackRequest(model: string, agentHint: string): () => void {
+  const count = (activeRequests.get(model) ?? 0) + 1;
+  activeRequests.set(model, count);
+  const start = Date.now();
+  if (count > 1) {
+    log.warn('Inference router: request queuing behind active inference', {
+      model,
+      agent: agentHint,
+      concurrentRequests: count,
+    });
+  }
+  return () => {
+    const elapsed = Date.now() - start;
+    const remaining = (activeRequests.get(model) ?? 1) - 1;
+    if (remaining <= 0) activeRequests.delete(model);
+    else activeRequests.set(model, remaining);
+    if (elapsed > 5000) {
+      log.info('Inference router: request completed', { model, agent: agentHint, elapsedMs: elapsed });
+    }
+  };
+}
+
 let server: http.Server | null = null;
 
 export function startInferenceRouter(port: number): void {
@@ -120,23 +147,34 @@ export function startInferenceRouter(port: number): void {
 
     let body = rawBody;
     let backend: Backend = { kind: 'anthropic' };
+    let resolvedModel = 'unknown';
+
+    // Best-effort agent hint from x-agent-id header (containers may set this)
+    const agentHint = (req.headers['x-agent-id'] as string | undefined) ?? req.socket.remoteAddress ?? 'unknown';
 
     try {
       const parsed = JSON.parse(rawBody.toString('utf-8'));
-      if (typeof parsed.model === 'string' && /^(ollama|anthropic)-/.test(parsed.model)) {
-        const resolved = parsePrefix(parsed.model);
-        backend = resolved.backend;
-        parsed.model = resolved.model;
-        body = Buffer.from(JSON.stringify(parsed), 'utf-8');
-        log.debug('Inference router: rewrote model', {
-          original: (JSON.parse(rawBody.toString('utf-8')) as { model?: string }).model,
-          rewritten: resolved.model,
-          backend: resolved.backend.kind,
-        });
+      if (typeof parsed.model === 'string') {
+        resolvedModel = parsed.model;
+        if (/^(ollama|anthropic)-/.test(parsed.model)) {
+          const resolved = parsePrefix(parsed.model);
+          backend = resolved.backend;
+          parsed.model = resolved.model;
+          body = Buffer.from(JSON.stringify(parsed), 'utf-8');
+          log.debug('Inference router: rewrote model', {
+            original: resolvedModel,
+            rewritten: resolved.model,
+            backend: resolved.backend.kind,
+          });
+        }
       }
     } catch {
       // Non-JSON body (health checks, etc.) — forward as-is to Anthropic
     }
+
+    const done = (() => { let called = false; const fn = trackRequest(resolvedModel, agentHint); return () => { if (!called) { called = true; fn(); } }; })();
+    res.on('finish', done);
+    res.on('close', done);
 
     if (backend.kind === 'ollama') {
       forwardToOllama(req, res, body);
