@@ -62,15 +62,42 @@ Read-only. Given canonical history in conversation plus Obsidian tools (search /
 - **Minimal version: duplicate the Seeker agent file and rename it.** Let the two prompts diverge freely rather than forcing a shared abstraction between two meaningfully different tasks.
 - **If/when real shared chunks emerge** (and only then): refactor the common part out and use include syntax in both agent files. Don't pre-extract a shared abstraction speculatively.
 
+**Runs on the host, not in Lumen's container.** MBIF and the briefing agent live entirely outside any container's mounted filesystem — the vault is a host-FS directory, not something mounted into Lumen's session. Lumen's only filesystem touchpoint is a symlinked **MBIF Inbox** folder in her workspace, where she can drop her own files/documents/notes for the intra-day writer to pick up later — she has no live vault access mid-turn.
+
 ## 6. Lumen's tool surface
 
 Lumen gets **only** a "read Obsidian note by path" tool — no search tool. She follows wikilinks already present in the injected briefing rather than deciding to go search on her own. This directly avoids the self-defeating-tool problem from §1: she never has to remember memory exists, because a link is already sitting in front of her when it's relevant.
 
 ## 7. Pipeline placement
 
-The briefing step is a **mandatory synchronous pre-step in the wake pipeline** (message arrives → briefing job runs → Lumen's turn), not a callable skill Lumen chooses to invoke. This is the same reasoning as §6: a memory mechanism gated behind the recaller remembering to call it reproduces the exact failure mode being designed away from.
+Since the briefing runs on the host (§5) and must complete before Lumen's container is even woken, the loop is:
 
-Accepted trade-off: every turn pays the briefing agent's latency/cost, even on turns where little or nothing relevant exists to retrieve. DMJ has explicitly signed off on slower interactions in exchange for this.
+1. Trigger arrives (channel message, scheduled task, host-sweep due-wake) → written durably (queue, §7a), not routed straight to the container.
+2. Host-side worker dequeues it, invokes the briefing agent (headless `-p`, no container involved) against the incoming message + last-N literal turns + vault.
+3. Once the briefing markdown comes back, the host assembles Lumen's actual prompt (briefing + last-N literal turns + the new message) and **only then** wakes/spawns the container.
+4. Lumen's turn runs as normal; response delivered; response appended to canonical transcript as before.
+
+This is a mandatory pipeline stage, not a callable skill Lumen chooses to invoke — same reasoning as §6: a memory mechanism gated behind the recaller remembering to call it reproduces the exact failure mode being designed away from.
+
+Accepted trade-off: every turn pays the briefing agent's latency/cost — including container-wake latency, since the container no longer wakes until briefing completes — even on turns where little or nothing relevant exists to retrieve. DMJ has explicitly signed off on slower interactions in exchange for this.
+
+## 7a. Queue and concurrency
+
+**Durable FIFO queue, reusing the existing pattern.** NanoClaw already has a durable queue shape for exactly this kind of problem: `inbound.db`'s `messages_in` (pending/processing/tries/backoff, with host-sweep recovering stale claims). The briefing-pending stage should reuse that shape rather than invent new queue infra — a message sits durably queued until a worker claims it, so a host restart mid-briefing can't lose or duplicate work.
+
+**FIFO scope is per-session**, not global — one session's messages process in arrival order, but unrelated sessions aren't blocked behind each other. Ordering must be enforced by an **explicit per-session queue** (only the head-of-queue message for a session is ever a candidate to run), not by trusting a semaphore's internal wakeup order to preserve arrival order — generic semaphores aren't guaranteed FIFO-fair across waiters.
+
+**Concurrency: three configurable knobs**, default `globalConcurrency = 1` (full serialization — this is deliberately the current experiment's starting condition, not a permanent architectural commitment; raising it later as backends change is just a config edit):
+
+- `briefingConcurrency` — max concurrent briefing-agent invocations
+- `agentConcurrency` — max concurrent Lumen container turns
+- `globalConcurrency` — hard ceiling across both combined
+
+**Acquisition order to avoid deadlock:** always acquire the global permit *before* the lane permit, never the reverse, across every code path — a fixed acquisition order rules out the classic circular-wait deadlock. Equally important: never hold a permit across an independent pipeline stage — release both permits fully once briefing completes, before the agent-stage separately acquires its own fresh permits for the same message.
+
+**Real risk isn't deadlock, it's starvation/convoy**, sharper at `global=1`: a long-running agent turn (or a hung briefing call — plausible while validating a new external Tailscale backend or a fresh local Ollama link) holding the single global permit blocks *every other session* behind it, not just its own, and with no timeout this looks indistinguishable from a deadlock from the outside. Needs the same stale-claim recovery pattern host-sweep already does for `inbound.db` — a max-duration per task, forced release/requeue on timeout.
+
+**Backend selection is orthogonal.** Whether briefing/Lumen calls land on local Ollama, a Tailscale-linked external machine, or the Anthropic API is a PrefixRouter model-prefix routing concern (see [inference-router.md](inference-router.md)), decoupled entirely from these concurrency knobs.
 
 ## 8. Open questions (not yet resolved)
 
@@ -78,9 +105,11 @@ Accepted trade-off: every turn pays the briefing agent's latency/cost, even on t
 - Whether `-p` invocation of a Seeker-derived agent costs what's expected for a "small, focused model," or inherits Seeker's (possibly heavier) default model choice.
 - Real failure modes of the briefing agent's traversal — deliberately left to observation, not designed in advance.
 - Whether/how shared prompt chunks between Seeker and the briefing agent get identified once they exist.
+- Whether `globalConcurrency=1` is actually viable in practice (part of the experiment) or becomes a bottleneck once real usage patterns show up.
 
 ## 9. Explicit non-goals (for now)
 
 - Does not touch task-execution context assembly (agent-coding sessions keep literal transcript + compaction).
 - Does not pre-build a fixed retrieval-depth or traversal algorithm for the briefing agent.
 - Does not pre-extract shared prompt structure between Seeker and the briefing agent before duplication actually hurts.
+- Does not tie concurrency limits to any specific backend — those are config, tuned independently of PrefixRouter's routing choices.
