@@ -178,4 +178,45 @@ describe('cleanupOrphans', () => {
       names: ['nanoclaw-a-1', 'nanoclaw-b-2'],
     });
   });
+
+  // Regression fixture — a trimmed but *real* sample of `container ls --format
+  // json` output (captured 2026-07-07). The bug this guards against: an
+  // earlier version of cleanupOrphans read top-level `name`/`labels` fields
+  // that don't exist in Apple Container's actual output (name is `id`, labels
+  // live under `configuration.labels`), so the orphan filter silently matched
+  // nothing on every run — containers accumulated across every host restart
+  // for weeks before it was caught. A hand-rolled mock shape can drift from
+  // reality the same way the buggy code did; this fixture can't.
+  it('matches real container ls --format json output shape', () => {
+    const realSample = JSON.stringify([
+      {
+        configuration: {
+          id: 'buildkit',
+          labels: {
+            'com.apple.container.plugin': 'builder',
+            'com.apple.container.resource.role': 'builder',
+          },
+        },
+        id: 'buildkit',
+        status: { state: 'running' },
+      },
+      {
+        configuration: {
+          id: `nanoclaw-v2-dm-with-dmj-1783339327910`,
+          labels: { [labelKey]: labelVal },
+        },
+        id: 'nanoclaw-v2-dm-with-dmj-1783339327910',
+        status: { state: 'running' },
+      },
+    ]);
+    mockExecSync.mockReturnValueOnce(realSample);
+    mockExecSync.mockReturnValueOnce('');
+
+    cleanupOrphans();
+
+    expect(log.info).toHaveBeenCalledWith('Stopped orphaned containers', {
+      count: 1,
+      names: ['nanoclaw-v2-dm-with-dmj-1783339327910'],
+    });
+  });
 });
