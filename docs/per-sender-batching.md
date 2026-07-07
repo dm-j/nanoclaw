@@ -11,7 +11,7 @@ causes two issues:
    never meaningfully acts on it.
 
 2. **Batch assumption**: when Lumen receives a mixed batch (e.g. messages from
-   annotator, DMJ, and a subagent), she may treat earlier messages as already
+   a peer agent, DMJ, and a subagent), she may treat earlier messages as already
    handled and respond only to the most recent. 19 messages across 5 senders
    would otherwise require 19 separate turns; batching by sender compresses
    them to 5 — more efficient, especially under load.

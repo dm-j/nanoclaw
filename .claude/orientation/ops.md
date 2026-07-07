@@ -70,7 +70,7 @@ General rule: **don't trust Docker-shaped intuition against the `container` CLI'
 
 ## Agent-to-Agent Messaging
 
-A2A messages are fire-and-forget. The annotator's reply lands in the recipient's `inbound.db` as a pending message. It's picked up on the next poll turn — the recipient doesn't wait synchronously. The recipient can use the annotator's reply to proactively message the user without being prompted.
+A2A messages are fire-and-forget. A peer agent's reply lands in the recipient's `inbound.db` as a pending message. It's picked up on the next poll turn — the recipient doesn't wait synchronously. The recipient can use the peer's reply to proactively message the user without being prompted.
 
 ## Shell Scripts Inside the Container
 
