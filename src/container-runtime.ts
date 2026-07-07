@@ -92,8 +92,13 @@ export function ensureContainerRuntimeRunning(): void {
  * Apple Container: `container ls --format json` returns a JSON array.
  * Scoped by label `nanoclaw-install=<slug>` so a crash-looping peer install
  * cannot reap our containers, and we cannot reap theirs.
+ *
+ * `protectedNames` excludes containers this process currently tracks as
+ * live (see `getTrackedContainerNames` in container-runner.ts) — required
+ * for any call site other than startup, where nothing is tracked yet and
+ * every matching container is by definition a leftover from a prior process.
  */
-export function cleanupOrphans(): void {
+export function cleanupOrphans(protectedNames: Set<string> = new Set()): void {
   try {
     const output = execSync(`${CONTAINER_RUNTIME_BIN} ls --format json`, {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -115,7 +120,7 @@ export function cleanupOrphans(): void {
     const orphans = containers
       .filter((c) => c.configuration?.labels?.[labelKey] === labelValue)
       .map((c) => c.id)
-      .filter((id): id is string => !!id);
+      .filter((id): id is string => !!id && !protectedNames.has(id));
 
     for (const name of orphans) {
       try {

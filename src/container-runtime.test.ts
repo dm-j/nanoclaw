@@ -219,4 +219,21 @@ describe('cleanupOrphans', () => {
       names: ['nanoclaw-v2-dm-with-dmj-1783339327910'],
     });
   });
+
+  it('never stops a container in protectedNames, even if label-matched', () => {
+    const containers = [
+      { id: 'nanoclaw-live-1', configuration: { labels: { [labelKey]: labelVal } } },
+      { id: 'nanoclaw-dead-2', configuration: { labels: { [labelKey]: labelVal } } },
+    ];
+    mockExecSync.mockReturnValueOnce(JSON.stringify(containers));
+    mockExecSync.mockReturnValueOnce('');
+
+    cleanupOrphans(new Set(['nanoclaw-live-1']));
+
+    expect(mockExecSync).toHaveBeenCalledTimes(2);
+    expect(log.info).toHaveBeenCalledWith('Stopped orphaned containers', {
+      count: 1,
+      names: ['nanoclaw-dead-2'],
+    });
+  });
 });

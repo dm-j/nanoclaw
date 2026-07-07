@@ -188,6 +188,11 @@ export function isContainerRunning(sessionId: string): boolean {
   return activeContainers.has(sessionId);
 }
 
+/** Container names this process currently tracks as live — used to protect them from a periodic orphan sweep. */
+export function getTrackedContainerNames(): Set<string> {
+  return new Set([...activeContainers.values()].map((c) => c.containerName));
+}
+
 /**
  * Wake up a container for a session. If already running or mid-spawn, no-op
  * (the in-flight wake promise is reused).
