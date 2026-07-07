@@ -281,7 +281,8 @@ This project uses pnpm with `minimumReleaseAge: 4320` (3 days) in `pnpm-workspac
 | [docs/v1-to-v2-changes.md](docs/v1-to-v2-changes.md) | v1→v2 architecture diff — vocabulary for where v1 things moved |
 | [docs/migration-dev.md](docs/migration-dev.md) | Migration development guide — testing, debugging, dev loop |
 | [docs/provider-migration.md](docs/provider-migration.md) | Switching a live agent group between providers (e.g. Claude → Codex) — what carries over, rollback |
-| [docs/inference-router.md](docs/inference-router.md) | Inference router (port 10261) — model-prefix routing (`ollama-`, `anthropic-`), `.env` setup, sub-agent inheritance |
+| [docs/inference-router.md](docs/inference-router.md) | Model-prefix routing to Ollama/Anthropic via the sibling PrefixRouter project (port 8787) — `ollama/`, `anthropic/` prefixes |
+| [docs/local-customizations.md](docs/local-customizations.md) | Index of this install's local features/deviations from upstream, each with a one-line summary and a link to its full doc |
 | [docs/customizing.md](docs/customizing.md) | Short intro to customizing via skills |
 | [docs/skills-model.md](docs/skills-model.md) | The skills model in full: recipes, tests, upgrades, migrations |
 | [docs/skill-guidelines.md](docs/skill-guidelines.md) | Authoritative checklist for writing a skill |

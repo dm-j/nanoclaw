@@ -5,7 +5,7 @@
 | Port | Service | Notes |
 |------|---------|-------|
 | 10260 | host-services-proxy | Listens `0.0.0.0`; handles `.internal` service calls (memsearch) + CONNECT tunnel to OneCLI; Bearer token auth |
-| 10261 | inference-router | Listens `0.0.0.0`; model-prefix routing (see inference.md); sub-agents inherit via `ANTHROPIC_BASE_URL` |
+| 8787 | PrefixRouter (sibling project, not this repo) | Model-prefix routing (see inference.md); sub-agents inherit via `ANTHROPIC_BASE_URL` |
 | 10254 | OneCLI web UI | Approval rules, secret config |
 | 10255 | OneCLI proxy | Credential injection; host-only (`127.0.0.1`); containers reach it via CONNECT through port 10260 |
 | 11434 | Ollama | Local model server; plain HTTP, no auth |
@@ -23,4 +23,4 @@ OneCLI injects `HTTP_PROXY=http://127.0.0.1:10255` into containers. Container-ru
 
 ## NO_PROXY
 
-`NO_PROXY=${CONTAINER_HOST_GATEWAY}` is injected before per-group env overrides so the `HTTP_PROXY` doesn't intercept the plain-HTTP inference router request on port 10261.
+`NO_PROXY=${CONTAINER_HOST_GATEWAY}` is injected before per-group env overrides so the `HTTP_PROXY` doesn't intercept the plain-HTTP PrefixRouter request on port 8787.

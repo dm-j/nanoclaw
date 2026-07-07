@@ -6,7 +6,7 @@ Operational knowledge not covered by CLAUDE.md. Read the relevant file before wo
 
 | File | When to read |
 |------|-------------|
-| [networking.md](networking.md) | Before touching anything involving ports, proxies, or host↔container connectivity. Covers ports (10260/10261/10254/10255/11434), host gateway IP, HTTP_PROXY rewriting, NO_PROXY. |
+| [networking.md](networking.md) | Before touching anything involving ports, proxies, or host↔container connectivity. Covers ports (10260/8787/10254/10255/11434), host gateway IP, HTTP_PROXY rewriting, NO_PROXY. |
 | [inference.md](inference.md) | Before editing the inference router or any model-prefix routing logic. Before debugging "model not found" or routing errors. Covers `ollama-` / `anthropic-` prefixes and sub-agent inheritance. |
 | [auth.md](auth.md) | Before touching credential injection, OneCLI secrets, service tokens, or egress lockdown. Read this if a container is getting 401s or can't reach an API. |
 | [runtime.md](runtime.md) | Before adding or modifying container mounts, writing stub scripts, changing the entrypoint, or rebuilding the image. Covers Apple Container file-mount limits, bash-vs-dash, Bun/Node split. |
