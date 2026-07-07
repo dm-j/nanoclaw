@@ -19,6 +19,26 @@ pnpm run build && launchctl kickstart -k gui/$(id -u)/com.nanoclaw
 
 `on_wake` column on `messages_in` ensures wake messages are only picked up by a fresh container's first poll — dying containers can't steal them.
 
+## `container ls --format json` shape does not match Docker intuition
+
+Apple Container's JSON output nests everything under `configuration`, and its container name is the top-level `id` field — there is no top-level `name`. This burned us badly: `cleanupOrphans()` was written reading `c.name` and `c.labels` at the top level (matching Docker's `docker ps --format json` shape, and matching normal intuition about "a container listing has a name and labels field"). Both were always `undefined` on Apple Container, so the orphan filter was silently empty on **every single run** since the Docker→Apple Container migration — zombie containers from every prior host restart stayed alive indefinitely, all racing to answer wake calls on the same session's DBs. One was old enough to still carry a dead env var from before the PrefixRouter migration, producing a `ConnectionRefused` that looked like an unrelated bug.
+
+The actual shape (trimmed):
+
+```json
+[{
+  "id": "nanoclaw-v2-dm-with-dmj-1783339327910",
+  "configuration": { "id": "...", "labels": { "nanoclaw-install": "1328e183" } },
+  "status": { "state": "running" }
+}]
+```
+
+So: `c.id` for the name, `c.configuration.labels` for labels — never `c.name`/`c.labels`.
+
+**The unit tests didn't catch this either**, because they hand-mocked the (wrong) shape the code expected, so the mock and the bug agreed with each other. `src/container-runtime.test.ts` now has a regression test built from a real captured `container ls --format json` sample specifically to prevent that recurring — when touching this code, extend that fixture rather than hand-rolling a new mock shape from intuition.
+
+General rule: **don't trust Docker-shaped intuition against the `container` CLI's JSON output.** Apple Container's parity with Docker is at the command-line-flag level, not the structured-output level — always dump a real sample (`container ls --format json | python3 -m json.tool`) and check field paths before writing parsing code against it.
+
 ## Diagnosing a Stuck Container
 
 1. Check heartbeat freshness: `ls -la data/v2-sessions/<group>/<session>/.heartbeat`
