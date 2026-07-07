@@ -654,11 +654,12 @@ async function buildContainerArgs(
   applyOneCLIContainerConfig(args, onecliConfig, fileMounts);
   log.info('OneCLI gateway applied', { containerName });
 
-  // Default inference base URL: all containers route through the inference router,
-  // which strips model-name prefixes and dispatches to Ollama or Anthropic/OneCLI.
+  // Default inference base URL: all containers route through PrefixRouter
+  // (sibling project, host port 8787), which dispatches by model-name prefix
+  // (e.g. ollama/kimi-k2.6:cloud) to Ollama or Anthropic/OneCLI.
   // NO_PROXY ensures the host gateway bypasses HTTP_PROXY (injected by OneCLI)
-  // so the plain-HTTP request to :10261 isn't intercepted by the host-services-proxy.
-  args.push('-e', `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:10261`);
+  // so the plain-HTTP request to :8787 isn't intercepted by the host-services-proxy.
+  args.push('-e', `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:8787`);
   args.push('-e', 'ANTHROPIC_API_KEY=INJECTED_BY_ONECLI');
   args.push('-e', `NO_PROXY=${CONTAINER_HOST_GATEWAY}`);
   args.push('-e', `no_proxy=${CONTAINER_HOST_GATEWAY}`);

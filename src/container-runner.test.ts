@@ -93,15 +93,15 @@ describe('container boot-failure tripwire (structural)', () => {
 });
 
 describe('inference router env injection (structural)', () => {
-  // All containers must point ANTHROPIC_BASE_URL at the inference router so
+  // All containers must point ANTHROPIC_BASE_URL at PrefixRouter so
   // model-prefix routing works and sub-agents inherit the right endpoint.
   // NO_PROXY must accompany it so the HTTP_PROXY injected by OneCLI doesn't
-  // intercept the plain-HTTP request to host.docker.internal:10261.
+  // intercept the plain-HTTP request to host.docker.internal:8787.
   // Both must be injected BEFORE per-group env overrides so the group can
   // still override if needed.
   it('injects ANTHROPIC_BASE_URL and NO_PROXY before per-group env overrides', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src', 'container-runner.ts'), 'utf-8');
-    const routerUrl = src.indexOf('ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:10261');
+    const routerUrl = src.indexOf('ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:8787');
     const noProxy = src.indexOf('NO_PROXY=${CONTAINER_HOST_GATEWAY}');
     const perGroupEnv = src.indexOf('containerConfig.env');
     expect(routerUrl).toBeGreaterThan(-1);
