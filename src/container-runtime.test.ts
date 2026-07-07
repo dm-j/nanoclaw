@@ -112,8 +112,8 @@ describe('cleanupOrphans', () => {
 
   it('stops orphaned nanoclaw containers', () => {
     const containers = [
-      { name: 'nanoclaw-group1-111', labels: { [labelKey]: labelVal } },
-      { name: 'nanoclaw-group2-222', labels: { [labelKey]: labelVal } },
+      { id: 'nanoclaw-group1-111', configuration: { labels: { [labelKey]: labelVal } } },
+      { id: 'nanoclaw-group2-222', configuration: { labels: { [labelKey]: labelVal } } },
     ];
     mockExecSync.mockReturnValueOnce(JSON.stringify(containers));
     mockExecSync.mockReturnValue('');
@@ -128,7 +128,7 @@ describe('cleanupOrphans', () => {
   });
 
   it('does not stop containers from a different install', () => {
-    const containers = [{ name: 'nanoclaw-other-999', labels: { [labelKey]: 'different-slug' } }];
+    const containers = [{ id: 'nanoclaw-other-999', configuration: { labels: { [labelKey]: 'different-slug' } } }];
     mockExecSync.mockReturnValueOnce(JSON.stringify(containers));
 
     cleanupOrphans();
@@ -161,8 +161,8 @@ describe('cleanupOrphans', () => {
 
   it('continues stopping remaining containers when one stop fails', () => {
     const containers = [
-      { name: 'nanoclaw-a-1', labels: { [labelKey]: labelVal } },
-      { name: 'nanoclaw-b-2', labels: { [labelKey]: labelVal } },
+      { id: 'nanoclaw-a-1', configuration: { labels: { [labelKey]: labelVal } } },
+      { id: 'nanoclaw-b-2', configuration: { labels: { [labelKey]: labelVal } } },
     ];
     mockExecSync.mockReturnValueOnce(JSON.stringify(containers));
     mockExecSync.mockImplementationOnce(() => {

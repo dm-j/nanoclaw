@@ -100,7 +100,9 @@ export function cleanupOrphans(): void {
       encoding: 'utf-8',
     });
 
-    type ContainerEntry = { id?: string; name?: string; labels?: Record<string, string> };
+    // `container ls --format json` nests labels under `configuration.labels`
+    // and has no top-level `name` — the container's name is its `id`.
+    type ContainerEntry = { id?: string; configuration?: { labels?: Record<string, string> } };
     let containers: ContainerEntry[] = [];
     try {
       containers = JSON.parse(output.trim() || '[]') as ContainerEntry[];
@@ -109,10 +111,11 @@ export function cleanupOrphans(): void {
       return;
     }
 
+    const [labelKey, labelValue] = CONTAINER_INSTALL_LABEL.split('=');
     const orphans = containers
-      .filter((c) => c.labels?.[CONTAINER_INSTALL_LABEL.split('=')[0]] === CONTAINER_INSTALL_LABEL.split('=')[1])
-      .map((c) => c.name)
-      .filter((name): name is string => !!name);
+      .filter((c) => c.configuration?.labels?.[labelKey] === labelValue)
+      .map((c) => c.id)
+      .filter((id): id is string => !!id);
 
     for (const name of orphans) {
       try {
