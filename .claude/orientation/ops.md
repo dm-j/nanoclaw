@@ -1,5 +1,19 @@
 # Operations
 
+## `groups/<folder>/container.json` is a materialized copy of the DB, not the source of truth
+
+Editing `groups/<folder>/container.json` directly looks like it works — the file changes, `cat` shows the new value — but it gets **overwritten from `container_configs` in `data/v2.db`** every time the container spawns (`materializeContainerJson`, per `CLAUDE.md`'s Container Config section). Burned us: after migrating model-prefix syntax from `ollama-foo` to `ollama/foo`, the on-disk file was hand-edited and looked correct, but the DB row still had the old dash-prefixed value — so every respawn quietly reverted the file, and the container kept sending the stale model name to the router (`400 No routing rule matches model "ollama-foo"`).
+
+**Always update via `ncl groups config update --id <group-id> --model ...`** (or the other `config` verbs), never by hand-editing `container.json`. Check what's actually live with:
+```bash
+pnpm exec tsx scripts/q.ts data/v2.db "SELECT agent_group_id, model FROM container_configs"
+```
+Config changes need `ncl groups restart --id <group-id>` (optionally `--message` to wake it immediately) to actually take effect — updating the DB row alone doesn't touch a container that's already running.
+
+## Editing `container/agent-runner/src/` doesn't need an image rebuild
+
+That source tree is **bind-mounted read-only into the container at spawn time** (`src/container-runner.ts` — `agentRunnerSrc`), not `COPY`'d into the image by the Dockerfile. A host-side edit is visible inside an *already-running* container immediately (verify with `container exec <name> grep ... /app/src/...`) — no rebuild, and not even a restart, needed for the poll loop to pick it up on its next iteration. `./container/build.sh` only matters for things actually baked into the image (system packages, the CLI-tools block, `bun install`'s dependency layer) — running it after an agent-runner-only change is harmless but pointless, and its cached manifest digest won't change, which can look alarming but doesn't mean the build failed.
+
 ## Restart Patterns
 
 ```bash
@@ -52,6 +66,7 @@ General rule: **don't trust Docker-shaped intuition against the `container` CLI'
 - `journal_mode=DELETE` is load-bearing for cross-mount visibility — don't change without reading the comment block in `container/agent-runner/src/db/connection.ts`
 - **bun:sqlite named params**: use `$name` in both SQL and JS object keys — `.run({ $id: msg.id })`. Unlike `better-sqlite3`, bun:sqlite does NOT auto-strip the `$` prefix.
 - Session DBs live at `data/v2-sessions/<agent-group-id>/<session-id>/inbound.db` and `outbound.db`
+- **`datetime('now')` produces a naive string `new Date()` silently mis-parses as local time.** SQLite's `datetime('now')` writes `"2026-07-07 08:00:00"` — genuinely UTC, but no `Z`/offset marker, and no `T` separator. `new Date()` parses that shape as *local* wall-clock time, not UTC, so a naive round-trip through a "convert to local time" helper silently cancels itself out — the raw UTC hour gets displayed as if it were already local. Burned us: `formatLocalTime()` in both `src/timezone.ts` and `container/agent-runner/src/timezone.ts` did exactly this with `msg.timestamp`, so a task that correctly fired at 3am local (08:00 UTC) displayed to the agent as "8:00 AM." Host-side `parseSqliteUtc()` in `host-sweep.ts` already handled this correctly (append `Z` when no offset marker is present) — `formatLocalTime` didn't, until fixed. **Any time you hand a SQLite timestamp column to `new Date()` or a Date-parsing helper, normalize it first** (`/[zZ]|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(' ', 'T') + 'Z'`) rather than assuming it's already proper ISO.
 
 ## Agent-to-Agent Messaging
 
