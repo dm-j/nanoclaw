@@ -19,7 +19,6 @@ import {
   CONTAINER_MEMORY_LIMIT,
   DATA_DIR,
   GROUPS_DIR,
-  TIMEZONE,
 } from './config.js';
 import { materializeContainerJson } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
@@ -32,6 +31,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
+import { resolveGroupTimezone } from './group-folder.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
@@ -581,16 +581,10 @@ async function buildContainerArgs(
 
   // Environment — only vars read by code we don't own.
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
-  // Per-group timezone override — the agent can update .timezone to handle travel
-  const groupTzFile = path.join(GROUPS_DIR, agentGroup.folder, '.timezone');
-  let tz = TIMEZONE;
-  try {
-    const groupTz = fs.readFileSync(groupTzFile, 'utf-8').trim();
-    if (groupTz) tz = groupTz;
-  } catch {
-    // No per-group override — use global
-  }
-  args.push('-e', `TZ=${tz}`);
+  // Per-group timezone override — the agent can update .timezone to handle travel.
+  // Shared with host-side scheduling (recurrence.ts) via resolveGroupTimezone
+  // so a cron fired "3am" per this override doesn't fire 3am UTC instead.
+  args.push('-e', `TZ=${resolveGroupTimezone(agentGroup.folder)}`);
 
   // Service token: lets the host services proxy identify this container even
   // when Docker Desktop NATs the connection to 127.0.0.1. Never logged.
