@@ -10,9 +10,10 @@ interface TranscriptEntry {
   uuid?: string;
   isMeta?: boolean;
   timestamp?: string;
+  sessionId?: string;
   message?: {
     role?: string;
-    content?: string | Array<{ type: string; text?: string }>;
+    content?: string | Array<{ type: string; text?: string; name?: string; input?: unknown }>;
   };
 }
 
