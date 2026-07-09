@@ -7,6 +7,18 @@ description: Install rtk token-compression proxy into agent containers. Routes B
 
 Install [rtk](https://github.com/rtk-ai/rtk) — a CLI proxy delivering 60–90% token savings on common dev commands (git, cargo, pytest, docker, kubectl, etc.) — and wire it transparently into agent containers via the Claude Code `PreToolUse` hook.
 
+## Step 0 — Detect the container runtime
+
+This skill's Step 3 uses a single-file bind mount, which only works on Docker. Check which runtime this install uses before proceeding:
+
+```bash
+grep -E '^CONTAINER_RUNTIME_BIN=' .env 2>/dev/null
+command -v container >/dev/null && echo "Apple Container available"
+```
+
+- **Apple Container** (`CONTAINER_RUNTIME_BIN=container`, or the `container` CLI is what's actually running agent groups): **stop here.** Apple Container has no file bind mounts (see `.claude/orientation/runtime.md`) — the mount in Step 3 below will be rejected by the host and can hang the agent. Instead, read and execute `.claude/skills/add-rtk/add-rtk-apple-containers.md` as the workflow for this install. It is not a full `SKILL.md`, just an inline set of steps — follow it directly, do not continue reading this file.
+- **Docker**: continue with Step 1 below as written.
+
 ## What this sets up
 
 - `rtk` binary at `~/.local/bin/rtk` on the host
@@ -98,6 +110,17 @@ jq '.hooks.PreToolUse = ((.hooks.PreToolUse // [])
 ```bash
 ncl groups restart --id <group-id>
 ```
+
+## Step 6 — Check for a glibc mismatch
+
+The mounted binary is host-built (matching the host's OS/arch, e.g. linux-arm64 on Apple Silicon Docker Desktop's VM) but may still be linked against a newer glibc than the container's base image ships. Confirm it actually runs before relying on it:
+
+```bash
+docker exec "$(docker ps --filter "name=<group-id>" --format '{{.Names}}' | head -1)" rtk --version
+```
+
+- **Prints a version cleanly** → continue to Verify below.
+- **`Exec format error` or `GLIBC_2.XX' not found`** → this is a known incompatibility, not a config mistake. Stop here, read and execute `.claude/skills/add-rtk/add-rtk-glibc-incompatible.md`, then return to this file — that recovery bakes rtk into the image instead of mounting it, which supersedes Steps 3–6 above.
 
 ## Verify
 
