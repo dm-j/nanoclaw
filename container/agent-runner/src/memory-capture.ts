@@ -116,7 +116,7 @@ function parseTranscriptForMemory(content: string): { user: string; assistant: s
   return { user, assistant: assistantParts.join('\n\n'), sessionId };
 }
 
-function findTranscriptPath(sessionId: string): string | null {
+export function findTranscriptPath(sessionId: string): string | null {
   const base = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || '/home/node', '.claude');
   const projects = path.join(base, 'projects');
   let dirs: string[];

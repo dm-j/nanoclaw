@@ -6,6 +6,7 @@ import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
 import { captureMemoryTurn } from '../memory-capture.js';
+import { exportTurnToInbox } from '../transcript-export.js';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
@@ -407,6 +408,7 @@ export class ClaudeProvider implements AgentProvider {
   onExchangeComplete(exchange: import('./types.js').ProviderExchange): void {
     if (exchange.status === 'error') return;
     captureMemoryTurn(exchange.continuation, this.assistantName);
+    exportTurnToInbox(exchange.continuation, this.assistantName);
   }
 
   query(input: QueryInput): AgentQuery {
