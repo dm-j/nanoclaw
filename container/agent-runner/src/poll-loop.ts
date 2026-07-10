@@ -363,6 +363,18 @@ export async function processQuery(
   let endedForCommand = false;
   let corruptionStreak = 0;
   const pollHandle = setInterval(() => {
+    // Touch the heartbeat every tick regardless of what else happens below.
+    // The main for-await loop only touches it when the SDK yields an event
+    // (see the loop below) -- but a slow/flaky/hung inference request (e.g.
+    // PrefixRouter retrying a timed-out Ollama call) can legitimately go
+    // 60-270s+ with no event at all. Without this, host-sweep's
+    // CLAIM_STUCK_MS (60s, no declared-timeout equivalent for inference the
+    // way Bash gets one) kills the container mid-turn well before the
+    // provider's own timeout/retry logic ever gets a chance to fail cleanly
+    // and deliver an error message. This interval running at all proves the
+    // container's event loop is alive; a truly wedged process still misses
+    // it and falls back to the ABSOLUTE_CEILING_MS backstop.
+    if (!done) touchHeartbeat();
     if (done || pollInFlight || endedForCommand) return;
     pollInFlight = true;
 

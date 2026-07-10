@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -417,6 +418,18 @@ export class ClaudeProvider implements AgentProvider {
 
     const instructions = input.systemContext?.instructions;
 
+    // One correlation ID per turn (per `.query()` call, not per provider
+    // instance -- the provider is long-lived across many turns). Every
+    // request the SDK's underlying CLI makes during this turn's tool-use
+    // loop carries the same ID via ANTHROPIC_CUSTOM_HEADERS, which the SDK's
+    // bundled Anthropic client parses (newline-separated "Header: value"
+    // pairs) into request headers -- confirmed in node_modules/@anthropic-ai/
+    // claude-agent-sdk/sdk.mjs, no public SDK option exposes this directly.
+    // PrefixRouter records it as sender-correlation-id, letting us group all
+    // sequential requests from one turn in its logs.
+    const turnCorrelationId = randomUUID();
+    log(`turn correlation id: ${turnCorrelationId}`);
+
     const sdkResult = sdkQuery({
       prompt: stream,
       options: {
@@ -430,7 +443,7 @@ export class ClaudeProvider implements AgentProvider {
           ...Object.keys(this.mcpServers).map(mcpAllowPattern),
         ],
         disallowedTools: SDK_DISALLOWED_TOOLS,
-        env: this.env,
+        env: { ...this.env, ANTHROPIC_CUSTOM_HEADERS: `x-correlation-id: ${turnCorrelationId}` },
         model: this.model,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         effort: this.effort as any,
