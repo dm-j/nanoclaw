@@ -23,6 +23,12 @@ import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from 
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
+// Worst-case time for a single provider request to fail cleanly on its own:
+// PrefixRouter's per-endpoint fetch timeout (120s default, 90s for ollama) x
+// the Anthropic SDK client's default maxRetries (2, so 3 attempts total) =
+// up to ~360s, plus margin. Bounds how long we'll prop up the heartbeat past
+// the last real SDK event -- see the pollHandle interval in processQuery.
+const INFERENCE_HEARTBEAT_GRACE_MS = 7 * 60 * 1000;
 
 /**
  * Number of consecutive `database disk image is malformed` errors after which
@@ -362,19 +368,30 @@ export async function processQuery(
   let pollInFlight = false;
   let endedForCommand = false;
   let corruptionStreak = 0;
+  // Tracks time since the last real SDK event (reset in the for-await loop
+  // below on every event, not just once at turn start) -- a hang can happen
+  // at minute 20 of an otherwise-healthy long turn just as easily as at the
+  // start, so the grace window has to follow "time since last progress,"
+  // not "time since this turn began."
+  let lastEventMs = Date.now();
   const pollHandle = setInterval(() => {
-    // Touch the heartbeat every tick regardless of what else happens below.
-    // The main for-await loop only touches it when the SDK yields an event
-    // (see the loop below) -- but a slow/flaky/hung inference request (e.g.
-    // PrefixRouter retrying a timed-out Ollama call) can legitimately go
-    // 60-270s+ with no event at all. Without this, host-sweep's
-    // CLAIM_STUCK_MS (60s, no declared-timeout equivalent for inference the
-    // way Bash gets one) kills the container mid-turn well before the
-    // provider's own timeout/retry logic ever gets a chance to fail cleanly
-    // and deliver an error message. This interval running at all proves the
-    // container's event loop is alive; a truly wedged process still misses
-    // it and falls back to the ABSOLUTE_CEILING_MS backstop.
-    if (!done) touchHeartbeat();
+    // Touch the heartbeat while we're still inside the known worst-case
+    // window for a provider request to fail cleanly on its own (PrefixRouter
+    // timeout x SDK retries -- see INFERENCE_HEARTBEAT_GRACE_MS). The main
+    // for-await loop only touches it when the SDK yields an event; without
+    // this, host-sweep's CLAIM_STUCK_MS (60s, no declared-timeout equivalent
+    // for inference the way Bash gets one) kills the container mid-turn
+    // before a slow/flaky request (e.g. a timed-out Ollama call PrefixRouter
+    // is retrying) ever gets a chance to fail cleanly and deliver an error.
+    //
+    // Deliberately bounded, not unconditional for the turn's whole lifetime:
+    // that would mask any hang, not just a slow inference call, behind the
+    // 30-min ABSOLUTE_CEILING_MS instead of the fast ~60-120s CLAIM_STUCK_MS
+    // host-sweep normally uses. Once the grace window elapses since the last
+    // real SDK event, we stop propping up the heartbeat and let host-sweep's
+    // normal fast-kill tolerance apply -- a turn stuck for some other reason
+    // (e.g. a wedged tool call) still dies quickly, same as before this fix.
+    if (!done && Date.now() - lastEventMs < INFERENCE_HEARTBEAT_GRACE_MS) touchHeartbeat();
     if (done || pollInFlight || endedForCommand) return;
     pollInFlight = true;
 
@@ -483,6 +500,7 @@ export async function processQuery(
     for await (const event of query.events) {
       handleEvent(event, routing);
       touchHeartbeat();
+      lastEventMs = Date.now();
 
       if (event.type === 'init') {
         queryContinuation = event.continuation;
