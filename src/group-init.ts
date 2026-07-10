@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR, GROUPS_DIR } from './config.js';
-import { ensureContainerConfig, getContainerConfig, updateContainerConfigJson } from './db/container-configs.js';
+import { ensureContainerConfig } from './db/container-configs.js';
 import { log } from './log.js';
 import { providerProvidesAgentSurfaces } from './providers/provider-container-registry.js';
 import type { AgentGroup } from './types.js';
@@ -121,7 +121,6 @@ export function initGroupFilesystem(
   // the row already exists (e.g. created by backfill or group creation).
   ensureContainerConfig(group.id);
   initialized.push('container_configs');
-  ensureRtkMount(group.id, initialized);
 
   // 2. data/v2-sessions/<id>/.claude-shared/ — Claude state + per-group skills
   if (defaultSurfaces) {
@@ -161,7 +160,6 @@ export function initGroupFilesystem(
 }
 
 const RTK_HOOK_COMMAND = 'rtk hook claude';
-const RTK_MOUNT = { hostPath: '/Users/lumen/.local/bin/rtk', containerPath: '/usr/local/bin/rtk', readonly: true };
 
 const PRE_COMPACT_COMMAND = 'bun /app/src/compact-instructions.ts';
 const MEMSEARCH_STOP_COMMAND = 'bash /app/memsearch-plugin/hooks/stop.sh';
@@ -243,9 +241,13 @@ function ensureMemsearchHooks(settingsFile: string, initialized: string[]): void
 }
 
 /**
- * Ensure the rtk PreToolUse hook is present in settings.json and that the rtk
- * binary is in additional_mounts. Called on every group init so all new and
- * existing groups pick it up automatically.
+ * Ensure the rtk PreToolUse hook is present in settings.json. rtk itself is
+ * baked into the image at /usr/local/bin/rtk (container/Dockerfile) — no
+ * mount needed; a mount-based approach was tried and reverted (see
+ * .claude/skills/add-rtk/add-rtk-glibc-incompatible.md) since Apple
+ * Container has no file bind mounts and the host-built binary's glibc
+ * didn't match the container's base image anyway. Called on every group
+ * init so all new and existing groups pick it up automatically.
  */
 function ensureRtkHook(settingsFile: string, initialized: string[]): void {
   try {
@@ -261,26 +263,5 @@ function ensureRtkHook(settingsFile: string, initialized: string[]): void {
     }
   } catch {
     // Don't break init on malformed settings.json
-  }
-}
-
-/**
- * Ensure the rtk binary mount is present in container_configs.additional_mounts.
- * Called by initGroupFilesystem so all new and existing groups pick it up.
- */
-export function ensureRtkMount(agentGroupId: string, initialized: string[]): void {
-  try {
-    const config = getContainerConfig(agentGroupId);
-    if (!config) return;
-    const mounts: Array<{ hostPath: string; containerPath: string; readonly?: boolean }> = JSON.parse(
-      (config.additional_mounts as string) || '[]',
-    );
-    if (!mounts.some((m) => m.containerPath === RTK_MOUNT.containerPath)) {
-      mounts.push(RTK_MOUNT);
-      updateContainerConfigJson(agentGroupId, 'additional_mounts', mounts);
-      initialized.push('container_configs (added rtk mount)');
-    }
-  } catch {
-    // Don't break init
   }
 }
