@@ -14,6 +14,7 @@
 import type Database from 'better-sqlite3';
 
 import { log } from '../../log.js';
+import { TIMEZONE } from '../../config.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
 import { resolveGroupTimezone } from '../../group-folder.js';
 import type { Session } from '../../types.js';
@@ -26,7 +27,7 @@ export async function handleRecurrence(inDb: Database.Database, session: Session
   // resolveGroupTimezone if there's no override, no group found, or the
   // central DB lookup fails for any reason (never let a lookup failure here
   // block recurrence processing).
-  let tz: string | undefined;
+  let tz: string = TIMEZONE;
   try {
     const agentGroup = getAgentGroup(session.agent_group_id);
     if (agentGroup) tz = resolveGroupTimezone(agentGroup.folder);
