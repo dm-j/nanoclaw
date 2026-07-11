@@ -501,10 +501,50 @@ export class ClaudeProvider implements AgentProvider {
       push: (msg) => stream.push(msg),
       end: () => stream.end(),
       events: translateEvents(),
-      abort: () => {
+      // ===== WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
+      // See ORIENTATION.md (or .claude/orientation/) "external-workarounds"
+      // entry with this same tag for the full incident writeup. Short
+      // version: query.abort() previously only stopped OUR OWN consumption
+      // of sdkResult and our own input stream -- it never actually
+      // terminated the underlying CLI subprocess. On a genuine hang (the
+      // subprocess goes silent and never exits -- a known, still-open
+      // upstream bug, see anthropics/claude-code#28482 and
+      // anthropics/claude-agent-sdk-python#701), that left a wedged process
+      // alive, resumed against the same session id, while the next
+      // poll-loop iteration immediately spawned a SECOND sdkQuery() resumed
+      // against the SAME session -- two processes with a live claim on one
+      // resumed transcript file. If the wedged one ever woke up on its own
+      // it could write to that file concurrently with the new one, or
+      // flush a stale buffered tool call (e.g. a duplicate send_message)
+      // well after the fact.
+      //
+      // interrupt() is the SDK's real control-channel teardown: per its own
+      // spawnClaudeCodeProcess doc comment, it does stdin-EOF, waits ~2s
+      // grace, then force-kills via signal if the process hasn't exited
+      // cleanly by then -- bounded and eventually forceful even if the
+      // process isn't cooperating, not "ask nicely and hope." abort() now
+      // awaits it and only resolves once that's done, so callers that await
+      // abort() (poll-loop.ts's processQuery) can guarantee the old process
+      // is gone before starting a new one.
+      //
+      // DO NOT casually refactor or delete this block when touching this
+      // file for something else -- if/when Anthropic fixes the underlying
+      // hang, this whole workaround (this block, the matching await-abort
+      // plumbing in poll-loop.ts, and HANG_ABORT_MS) should be revertable as
+      // one clean, isolated change. Keep it that way: don't interleave
+      // unrelated edits into these lines.
+      abort: async () => {
         aborted = true;
         stream.end();
+        const interruptStartedAt = Date.now();
+        try {
+          await sdkResult.interrupt();
+          log(`interrupt() completed after ${Date.now() - interruptStartedAt}ms`);
+        } catch (err) {
+          log(`interrupt() failed after ${Date.now() - interruptStartedAt}ms: ${err instanceof Error ? err.message : String(err)}`);
+        }
       },
+      // ===== END WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
     };
   }
 }

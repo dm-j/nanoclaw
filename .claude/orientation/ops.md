@@ -53,6 +53,16 @@ So: `c.id` for the name, `c.configuration.labels` for labels — never `c.name`/
 
 General rule: **don't trust Docker-shaped intuition against the `container` CLI's JSON output.** Apple Container's parity with Docker is at the command-line-flag level, not the structured-output level — always dump a real sample (`container ls --format json | python3 -m json.tool`) and check field paths before writing parsing code against it.
 
+## `query.abort()` (Claude Agent SDK) does not kill the underlying process — my intuition was wrong here
+
+Assumed, without checking, that calling the SDK's returned `abort()` (or ending its input stream) would tear down the actual `claude` CLI subprocess. It doesn't — it only stops *our own* consumption of `query.events` and *our own* input stream. `processQuery()`'s for-await loop returns quickly because the SDK's own iterator completes once its input stream ends, which looks like a clean stop from our side — but the underlying OS child process it spawned can be left alive, still `--resume`d against the same session file, especially in the exact case we needed abort for (the subprocess has genuinely hung and gone silent).
+
+Real consequence, not just theoretical: our own `hang-abort` recovery (`poll-loop.ts`) would call the old broken `abort()`, then the outer loop would immediately spawn a *second* `sdkQuery()` resumed against the *same* session — two processes with a live claim on one transcript file. If the wedged one ever woke up later it could write to that file concurrently with the new one, or flush a stale buffered tool call (e.g. a duplicate `send_message`) well after the fact.
+
+The actual teardown method is `Query.interrupt()` (a real control-request on the SDK's `Query` object, not exposed via our own `AgentQuery` wrapper by default) — per its own `spawnClaudeCodeProcess` doc comment it does stdin-EOF → ~2s grace → force-kill via signal, which is bounded and eventually forceful even if the process isn't cooperating. Fixed in `claude.ts`'s `abort()` — see the `sdk-hang-abort` entry in [external-workarounds.md](external-workarounds.md) for the full incident and why `processQuery()` also needs to `await` the abort before letting the outer loop start a new query.
+
+**Lesson**: when an SDK/library gives you a "stop"-shaped method next to a lower-level "interrupt"/"kill"-shaped one, don't assume the friendly-looking one actually terminates the underlying process — check what it's actually documented to do, especially for anything spawning a subprocess.
+
 ## Diagnosing a Stuck Container
 
 1. Check heartbeat freshness: `ls -la data/v2-sessions/<group>/<session>/.heartbeat`

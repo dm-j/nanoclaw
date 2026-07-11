@@ -119,8 +119,15 @@ export interface AgentQuery {
   /** Output event stream. */
   events: AsyncIterable<ProviderEvent>;
 
-  /** Force-stop the query. */
-  abort(): void;
+  /**
+   * Force-stop the query. Resolves once the underlying process/session is
+   * actually torn down (not just once we've stopped reading from it) --
+   * callers that need to guarantee no two processes are ever concurrently
+   * attached to the same resumed session should `await` this before
+   * starting a new query. See claude.ts's implementation for why this
+   * distinction matters (WORKAROUND: claude-agent-sdk hang, tag: sdk-hang-abort).
+   */
+  abort(): Promise<void>;
 }
 
 export type ProviderEvent =
