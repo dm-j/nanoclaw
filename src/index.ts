@@ -13,6 +13,7 @@ import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
+import { getTrackedContainerNames } from './container-runner.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { startHostServicesProxy, stopHostServicesProxy } from './host-services-proxy.js';
@@ -63,6 +64,24 @@ import {
   teardownChannelAdapters,
   createChannelDeliveryAdapter,
 } from './channels/channel-registry.js';
+
+// Nightly orphan-container sweep — defense in depth alongside the startup
+// cleanupOrphans() call. Only ever excludes this process's own tracked
+// containers (getTrackedContainerNames), so a legitimately mid-turn agent
+// is never killed; it only catches containers that escaped tracking.
+const NIGHTLY_ORPHAN_SWEEP_HOUR = 2; // local time
+let nightlyOrphanSweepTimer: NodeJS.Timeout | null = null;
+
+function scheduleNightlyOrphanSweep(): void {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(NIGHTLY_ORPHAN_SWEEP_HOUR, 0, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  nightlyOrphanSweepTimer = setTimeout(() => {
+    cleanupOrphans(getTrackedContainerNames());
+    scheduleNightlyOrphanSweep();
+  }, next.getTime() - now.getTime());
+}
 
 async function main(): Promise<void> {
   log.info('NanoClaw starting');
@@ -167,6 +186,7 @@ async function main(): Promise<void> {
   // 6. Start host sweep
   startHostSweep();
   log.info('Host sweep started');
+  scheduleNightlyOrphanSweep();
 
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
@@ -195,6 +215,7 @@ async function shutdown(signal: string): Promise<void> {
   }
   stopDeliveryPolls();
   stopHostSweep();
+  if (nightlyOrphanSweepTimer) clearTimeout(nightlyOrphanSweepTimer);
   stopHostServicesProxy();
   stopInboxWatcher();
   stopFeeds();

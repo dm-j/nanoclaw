@@ -10,6 +10,19 @@
 # bind mount at runtime (see src/container-runner.ts). Source-only changes
 # never require an image rebuild.
 
+# ---- rtk builder --------------------------------------------------------------
+# rtk (https://github.com/rtk-ai/rtk) ships no linux-arm64 build compatible with
+# Debian 12/bookworm (its gnu release needs glibc 2.39+; bookworm has 2.36, and
+# there's no arm64 musl release). Compile from source against this exact base
+# so the resulting binary always matches the final image's glibc.
+FROM rust:1-slim-bookworm AS rtk-builder
+ARG RTK_VERSION=0.43.0
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL "https://github.com/rtk-ai/rtk/archive/refs/tags/v${RTK_VERSION}.tar.gz" -o /tmp/rtk-src.tar.gz \
+    && mkdir /build && tar xzf /tmp/rtk-src.tar.gz -C /build --strip-components=1 \
+    && cd /build && cargo build --release --locked
+
 FROM node:22-slim
 
 # ---- Build-time arguments ----------------------------------------------------
@@ -107,6 +120,9 @@ RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 COPY cli-tools.json install-cli-tools.sh /tmp/
 RUN --mount=type=cache,target=/root/.cache/pnpm \
     sh /tmp/install-cli-tools.sh /tmp/cli-tools.json
+
+# ---- rtk (token-compression proxy) --------------------------------------------
+COPY --from=rtk-builder /build/target/release/rtk /usr/local/bin/rtk
 
 # ---- ncl CLI wrapper ----------------------------------------------------------
 # Actual script lives in the mounted source at /app/src/cli/ncl.ts.

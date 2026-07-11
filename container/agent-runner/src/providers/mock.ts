@@ -66,7 +66,7 @@ export class MockProvider implements AgentProvider {
         waiting?.();
       },
       events,
-      abort() {
+      async abort() {
         aborted = true;
         waiting?.();
       },

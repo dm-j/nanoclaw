@@ -99,6 +99,15 @@ Accepted trade-off: every turn pays the briefing agent's latency/cost — includ
 
 **Backend selection is orthogonal.** Whether briefing/Lumen calls land on local Ollama, a Tailscale-linked external machine, or the Anthropic API is a PrefixRouter model-prefix routing concern (see [inference-router.md](inference-router.md)), decoupled entirely from these concurrency knobs.
 
+## 7b. Delivery mechanism insight: `isSynthetic` / `shouldQuery` (found 2026-07-11)
+
+While investigating an unrelated SDK hang bug (see `.claude/orientation/external-workarounds.md`, `sdk-hang-abort`), found that the Claude Agent SDK's `query()` accepts `prompt: string | AsyncIterable<SDKUserMessage>`, and `SDKUserMessage` carries `isSynthetic?: boolean` and `shouldQuery?: boolean` fields. Per the SDK's own docstring, `shouldQuery: false` appends a message to the transcript **without** triggering inference on it.
+
+This changes the likely implementation of §6/§7: instead of string-concatenating the briefing markdown into the prompt, the briefing packet could be injected as a synthetic prior turn via the message stream, appended to context but not itself queried. Two things this raises, not yet resolved:
+
+- Whether this also gives us `resume` for free — if context is rebuilt fresh every turn via synthetic messages, do we still need the SDK's own session-resume machinery, or can it be skipped?
+- Confirmed real risk: multiple concurrent sessions racing to build on the same nascent synthetic context. Surfaced during the same investigation that a wedged/hung SDK process could compound this (an old process still mutating shared state while a new one starts) — reinforces why §7a's queue/concurrency design (FIFO-per-session, global-then-lane semaphore ordering) matters even before this delivery mechanism is chosen.
+
 ## 8. Open questions (not yet resolved)
 
 - Exact vault frontmatter schema for ontological status / changelog — concept agreed, fields not finalized.
@@ -106,6 +115,7 @@ Accepted trade-off: every turn pays the briefing agent's latency/cost — includ
 - Real failure modes of the briefing agent's traversal — deliberately left to observation, not designed in advance.
 - Whether/how shared prompt chunks between Seeker and the briefing agent get identified once they exist.
 - Whether `globalConcurrency=1` is actually viable in practice (part of the experiment) or becomes a bottleneck once real usage patterns show up.
+- Whether briefing delivery uses `isSynthetic`/`shouldQuery` synthetic messages (§7b) or plain prompt concatenation, and whether that lets session-resume be skipped entirely.
 
 ## 9. Explicit non-goals (for now)
 

@@ -25,3 +25,7 @@ The `anthropic` endpoint in PrefixRouter's config has no `apiKeyEnv` set. Instea
 ## NO_PROXY Requirement
 
 PrefixRouter is plain HTTP on `CONTAINER_HOST_GATEWAY:8787`. Without `NO_PROXY=${CONTAINER_HOST_GATEWAY}`, the HTTP_PROXY set by OneCLI would intercept the request and break routing.
+
+## Advisor Tool Is Incompatible With Prefix-Routed Models
+
+Claude Code's built-in `advisor` tool sends a `type: "advisor_20260301"` tool definition straight to the Anthropic Messages API — it isn't a request Claude itself constructs, so PrefixRouter never gets a chance to rewrite the model. If a subagent or session is on a prefix-routed model (e.g. `ollama/...`) and something in the session invokes `advisor`, expect a 400 (`Input tag 'advisor_20260301' found ... does not match any of the expected tags`). This is a Claude Code harness limitation, not a PrefixRouter bug — no config here fixes it. Root cause of the `fastcontext-search` agent (`~/.claude/agents/fastcontext-search.md.disabled`) misbehaving in testing on 2026-07-08; disabled pending a Claude Code fix or workaround.

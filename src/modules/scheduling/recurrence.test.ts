@@ -8,12 +8,26 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ensureSchema, openInboundDb } from '../../db/session-db.js';
 import { insertTask } from './db.js';
-import { handleRecurrence } from './recurrence.js';
 import type { Session } from '../../types.js';
+
+// Mocked so the per-group-timezone test below doesn't need a real central DB
+// or a real groups/<folder>/.timezone file on disk — just asserts
+// handleRecurrence actually consults the group's resolved timezone rather
+// than the global config default.
+vi.mock('../../db/agent-groups.js', () => ({
+  getAgentGroup: vi.fn(),
+}));
+vi.mock('../../group-folder.js', () => ({
+  resolveGroupTimezone: vi.fn(),
+}));
+
+const { getAgentGroup } = await import('../../db/agent-groups.js');
+const { resolveGroupTimezone } = await import('../../group-folder.js');
+const { handleRecurrence } = await import('./recurrence.js');
 
 const TEST_DIR = '/tmp/nanoclaw-recurrence-test';
 const DB_PATH = path.join(TEST_DIR, 'inbound.db');
@@ -94,5 +108,31 @@ describe('handleRecurrence', () => {
 
     const count = (db.prepare(`SELECT COUNT(*) AS c FROM messages_in`).get() as { c: number }).c;
     expect(count).toBe(1);
+  });
+
+  // Regression test for the bug where handleRecurrence used the global
+  // config TIMEZONE unconditionally, ignoring any per-group .timezone
+  // override — so a task scheduled "3am" per the group's override fired at
+  // 3am UTC instead. Asserts the wiring, not cron-parser's own tz math.
+  it("resolves the session's agent group and uses its timezone override, not the global default", async () => {
+    const db = freshDb();
+    insertTask(db, {
+      id: 'task-1',
+      processAfter: '2020-01-01T00:00:00.000Z',
+      recurrence: '0 3 * * *',
+      platformId: null,
+      channelType: null,
+      threadId: null,
+      content: JSON.stringify({ prompt: 'daily digest' }),
+    });
+    db.prepare(`UPDATE messages_in SET status='completed' WHERE id='task-1'`).run();
+
+    vi.mocked(getAgentGroup).mockReturnValue({ id: 'ag-test', folder: 'lumen' } as ReturnType<typeof getAgentGroup>);
+    vi.mocked(resolveGroupTimezone).mockReturnValue('America/Chicago');
+
+    await handleRecurrence(db, fakeSession());
+
+    expect(getAgentGroup).toHaveBeenCalledWith('ag-test');
+    expect(resolveGroupTimezone).toHaveBeenCalledWith('lumen');
   });
 });

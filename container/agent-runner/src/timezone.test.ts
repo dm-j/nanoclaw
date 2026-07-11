@@ -31,6 +31,19 @@ describe('formatLocalTime', () => {
     expect(result).toContain('12:00');
     expect(result).toContain('PM');
   });
+
+  // Regression: SQLite's datetime('now') produces a naive, space-separated
+  // string with no offset marker ("2026-07-07 08:00:00") — genuinely UTC,
+  // but `new Date()` parses that shape as local time, silently canceling
+  // out the conversion below and showing the raw UTC hour as if local.
+  // This is exactly what msg.timestamp looked like reaching formatter.ts.
+  it('treats a naive SQLite datetime string as UTC, not local time', () => {
+    const isoResult = formatLocalTime('2026-07-07T08:00:00.000Z', 'America/Chicago');
+    const naiveResult = formatLocalTime('2026-07-07 08:00:00', 'America/Chicago');
+    expect(naiveResult).toBe(isoResult);
+    expect(naiveResult).toContain('3:00');
+    expect(naiveResult).toContain('AM');
+  });
 });
 
 describe('isValidTimezone', () => {

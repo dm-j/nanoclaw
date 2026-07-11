@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -6,6 +7,7 @@ import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
 import { captureMemoryTurn } from '../memory-capture.js';
+import { exportTurnToInbox } from '../transcript-export.js';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
@@ -407,6 +409,7 @@ export class ClaudeProvider implements AgentProvider {
   onExchangeComplete(exchange: import('./types.js').ProviderExchange): void {
     if (exchange.status === 'error') return;
     captureMemoryTurn(exchange.continuation, this.assistantName);
+    exportTurnToInbox(exchange.continuation, this.assistantName);
   }
 
   query(input: QueryInput): AgentQuery {
@@ -414,6 +417,18 @@ export class ClaudeProvider implements AgentProvider {
     stream.push(input.prompt);
 
     const instructions = input.systemContext?.instructions;
+
+    // One correlation ID per turn (per `.query()` call, not per provider
+    // instance -- the provider is long-lived across many turns). Every
+    // request the SDK's underlying CLI makes during this turn's tool-use
+    // loop carries the same ID via ANTHROPIC_CUSTOM_HEADERS, which the SDK's
+    // bundled Anthropic client parses (newline-separated "Header: value"
+    // pairs) into request headers -- confirmed in node_modules/@anthropic-ai/
+    // claude-agent-sdk/sdk.mjs, no public SDK option exposes this directly.
+    // PrefixRouter records it as sender-correlation-id, letting us group all
+    // sequential requests from one turn in its logs.
+    const turnCorrelationId = randomUUID();
+    log(`turn correlation id: ${turnCorrelationId}`);
 
     const sdkResult = sdkQuery({
       prompt: stream,
@@ -428,7 +443,7 @@ export class ClaudeProvider implements AgentProvider {
           ...Object.keys(this.mcpServers).map(mcpAllowPattern),
         ],
         disallowedTools: SDK_DISALLOWED_TOOLS,
-        env: this.env,
+        env: { ...this.env, ANTHROPIC_CUSTOM_HEADERS: `x-correlation-id: ${turnCorrelationId}` },
         model: this.model,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         effort: this.effort as any,
@@ -468,7 +483,7 @@ export class ClaudeProvider implements AgentProvider {
           yield { type: 'result', text, isError: m.is_error === true };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };
-        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'rate_limit_event') {
+        } else if (message.type === 'rate_limit_event') {
           yield { type: 'error', message: 'Rate limit', retryable: false, classification: 'quota' };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
           const meta = (message as { compact_metadata?: { pre_tokens?: number } }).compact_metadata;
@@ -486,10 +501,50 @@ export class ClaudeProvider implements AgentProvider {
       push: (msg) => stream.push(msg),
       end: () => stream.end(),
       events: translateEvents(),
-      abort: () => {
+      // ===== WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
+      // See ORIENTATION.md (or .claude/orientation/) "external-workarounds"
+      // entry with this same tag for the full incident writeup. Short
+      // version: query.abort() previously only stopped OUR OWN consumption
+      // of sdkResult and our own input stream -- it never actually
+      // terminated the underlying CLI subprocess. On a genuine hang (the
+      // subprocess goes silent and never exits -- a known, still-open
+      // upstream bug, see anthropics/claude-code#28482 and
+      // anthropics/claude-agent-sdk-python#701), that left a wedged process
+      // alive, resumed against the same session id, while the next
+      // poll-loop iteration immediately spawned a SECOND sdkQuery() resumed
+      // against the SAME session -- two processes with a live claim on one
+      // resumed transcript file. If the wedged one ever woke up on its own
+      // it could write to that file concurrently with the new one, or
+      // flush a stale buffered tool call (e.g. a duplicate send_message)
+      // well after the fact.
+      //
+      // interrupt() is the SDK's real control-channel teardown: per its own
+      // spawnClaudeCodeProcess doc comment, it does stdin-EOF, waits ~2s
+      // grace, then force-kills via signal if the process hasn't exited
+      // cleanly by then -- bounded and eventually forceful even if the
+      // process isn't cooperating, not "ask nicely and hope." abort() now
+      // awaits it and only resolves once that's done, so callers that await
+      // abort() (poll-loop.ts's processQuery) can guarantee the old process
+      // is gone before starting a new one.
+      //
+      // DO NOT casually refactor or delete this block when touching this
+      // file for something else -- if/when Anthropic fixes the underlying
+      // hang, this whole workaround (this block, the matching await-abort
+      // plumbing in poll-loop.ts, and HANG_ABORT_MS) should be revertable as
+      // one clean, isolated change. Keep it that way: don't interleave
+      // unrelated edits into these lines.
+      abort: async () => {
         aborted = true;
         stream.end();
+        const interruptStartedAt = Date.now();
+        try {
+          await sdkResult.interrupt();
+          log(`interrupt() completed after ${Date.now() - interruptStartedAt}ms`);
+        } catch (err) {
+          log(`interrupt() failed after ${Date.now() - interruptStartedAt}ms: ${err instanceof Error ? err.message : String(err)}`);
+        }
       },
+      // ===== END WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
     };
   }
 }

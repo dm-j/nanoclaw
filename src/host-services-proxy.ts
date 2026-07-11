@@ -5,6 +5,7 @@ import { URL } from 'url';
 
 import { getAgentGroupByFolder } from './db/agent-groups.js';
 import { CONTAINER_INSTALL_LABEL } from './config.js';
+import { CONTAINER_RUNTIME_BIN } from './container-runtime.js';
 import { log } from './log.js';
 
 // ponytail: plain HTTP for .internal services, no TLS termination needed.
@@ -60,37 +61,50 @@ const ipToAgentGroup = new Map<string, string>();
 
 function parseFolderFromContainerName(name: string): string | null {
   // Container names: nanoclaw-v2-<folder>-<timestamp>
-  // Strip leading / from Docker API names
+  // Strip leading / in case any caller passes a Docker-style "/name".
   const clean = name.startsWith('/') ? name.slice(1) : name;
   const match = clean.match(/^nanoclaw-v2-(.+)-\d+$/);
   return match ? match[1] : null;
 }
 
+// Apple Container's `ls --format json` nests labels under `configuration.labels`
+// and has no top-level `name` — the container's name is its `id`. Same shape
+// container-runtime.ts's cleanupOrphans() parses; see that file's comment for
+// a full sample. IP addresses come from `status.networks[].ipv4Address`,
+// which includes a CIDR suffix (e.g. "192.168.64.5/24") that must be
+// stripped to match the plain address `req.socket.remoteAddress` reports.
+interface ContainerLsEntry {
+  id?: string;
+  configuration?: { labels?: Record<string, string> };
+  status?: { networks?: Array<{ ipv4Address?: string }> };
+}
+
 async function refreshIpCache(): Promise<void> {
-  // ponytail: shell out to docker CLI, not dockerode. One less dep.
   const { execSync } = await import('child_process');
   try {
-    const out = execSync(`docker ps --filter "label=${CONTAINER_INSTALL_LABEL}" --format '{{.Names}} {{.ID}}'`, {
+    const out = execSync(`${CONTAINER_RUNTIME_BIN} ls --format json`, {
       encoding: 'utf-8',
       timeout: 5000,
     }).trim();
     if (!out) return;
 
-    for (const line of out.split('\n')) {
-      const [name, id] = line.split(' ');
-      if (!name || !id) continue;
+    const [labelKey, labelValue] = CONTAINER_INSTALL_LABEL.split('=');
+    const containers = JSON.parse(out) as ContainerLsEntry[];
 
-      const inspectOut = execSync(
-        `docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${id}`,
-        { encoding: 'utf-8', timeout: 5000 },
-      ).trim();
-      if (!inspectOut) continue;
+    for (const c of containers) {
+      if (c.configuration?.labels?.[labelKey] !== labelValue) continue;
+      const name = c.id;
+      if (!name) continue;
+
+      const ipv4 = c.status?.networks?.[0]?.ipv4Address;
+      if (!ipv4) continue;
+      const ip = ipv4.split('/')[0];
 
       const folder = parseFolderFromContainerName(name);
       if (!folder) continue;
 
       const group = getAgentGroupByFolder(folder);
-      if (group) ipToAgentGroup.set(inspectOut, group.id);
+      if (group) ipToAgentGroup.set(ip, group.id);
     }
   } catch (err) {
     log.warn('Host services proxy: failed to refresh IP cache', { err });

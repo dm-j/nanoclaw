@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingBatch, getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
@@ -23,6 +25,77 @@ import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from 
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
+// Worst-case time for a single provider request to fail cleanly on its own:
+// PrefixRouter's per-endpoint fetch timeout (120s default, 90s for ollama) x
+// the Anthropic SDK client's default maxRetries (2, so 3 attempts total) =
+// up to ~360s, plus margin. Bounds how long we'll prop up the heartbeat past
+// the last real SDK event -- see the pollHandle interval in processQuery.
+const INFERENCE_HEARTBEAT_GRACE_MS = 7 * 60 * 1000;
+
+/**
+ * How often (ms) the pollHandle interval emits an unconditional liveness
+ * diagnostic, regardless of whether the query is progressing. Distinct from
+ * touchHeartbeat's grace-gated behavior: this exists purely so a stuck turn
+ * is distinguishable in the logs from a genuinely wedged Node process — if
+ * these lines stop appearing, the JS event loop itself is dead, not just
+ * waiting on the SDK.
+ */
+const LIVENESS_TICK_MS = 15 * 1000;
+
+// ===== WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
+// See external-workarounds.md for the full incident. Hybrid threshold, not a
+// single flat timeout:
+//
+// - HANG_ABORT_URGENT_MS (90s): applied whenever something new is waiting
+//   for this session (a fresh chat message or a due task -- see the
+//   `pending.length > 0` check at the call site) while we're silent. A flat
+//   90s timeout applied unconditionally would risk killing a genuinely
+//   long-running legitimate turn (deep research, a big Bash job) just
+//   because it's quiet for a while -- so this only fires fast when there's
+//   an actual reason to hurry: someone's waiting on a reply.
+// - HANG_ABORT_IDLE_MS (30 min): applied when nothing new is waiting.
+//   Matches host-sweep's own ABSOLUTE_CEILING_MS (src/host-sweep.ts, host
+//   side) -- if we're going to self-abort proactively at the same point the
+//   host would otherwise force-kill the whole container, we might as well
+//   do it ourselves via the same clean interrupt()-based teardown.
+//
+// If new work shows up mid-silence, the threshold in effect is always
+// measured from the *original* last-event time, not from when the new work
+// arrived -- so a message arriving at, say, 10s of silence doesn't trigger
+// an immediate abort (waits until the 90s mark like any other case), but a
+// message arriving at the 5-minute mark (already past 90s) triggers an
+// abort on the very next tick, not at the 30-min mark.
+//
+// History: originally a single flat 10 minutes (comfortably above
+// INFERENCE_HEARTBEAT_GRACE_MS, comfortably below ABSOLUTE_CEILING_MS) as a
+// conservative first cut. Confirmed same-night on a second, independent
+// occurrence -- same silent-after-result shape, zero PrefixRouter traffic --
+// that this isn't a rare tail case, it's happening on essentially every
+// turn, which argued for shrinking to 90s flat. Reworked again same night
+// into this hybrid form once it was clear a flat short timeout risked
+// killing legitimate long-running turns that just happen to produce no SDK
+// event for a while.
+const HANG_ABORT_URGENT_MS = 90 * 1000;
+const HANG_ABORT_IDLE_MS = 30 * 60 * 1000;
+// ===== END WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) — constants =====
+
+/**
+ * Structured JSONL diagnostic log -- separate from the plain-text `log()`
+ * lines used elsewhere in this file. One JSON object per line, no prefix, so
+ * `container logs <name> | grep '^{' | jq .` (or `jq -c 'select(.component
+ * == "poll-loop-diag")'`) can slice by event/session/turn the same way
+ * PrefixRouter's own jsonl logs are queried.
+ */
+function diag(event: string, fields: Record<string, unknown> = {}): void {
+  console.error(
+    JSON.stringify({
+      'timestamp-utc': new Date().toISOString(),
+      component: 'poll-loop-diag',
+      event,
+      ...fields,
+    }),
+  );
+}
 
 /**
  * Number of consecutive `database disk image is malformed` errors after which
@@ -230,6 +303,10 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
 
+    const queryStartedAt = Date.now();
+    const queryId = `q-${queryStartedAt}-${Math.random().toString(36).slice(2, 8)}`;
+    diag('query-start', { queryId, messageCount: keep.length, kinds: [...new Set(keep.map((m) => m.kind))], hasContinuation: !!continuation });
+
     const query = config.provider.query({
       prompt,
       continuation,
@@ -252,6 +329,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         config.provider.onExchangeComplete?.bind(config.provider),
         prompt,
         continuation,
+        queryId,
       );
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
@@ -340,10 +418,29 @@ export async function processQuery(
   onExchangeComplete: ((exchange: ProviderExchange) => void) | undefined,
   initialPrompt: string,
   initialContinuation: string | undefined,
+  queryId = `q-legacy-${Date.now()}`,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
   let unwrappedNudged = false;
+  let hangAbortFired = false;
+  let queryErrored = false;
+  const queryStartedAt = Date.now();
+  // ===== WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
+  // Set whenever query.abort() is triggered (hang-abort below, or the
+  // pending-slash-command path further down). abort() now awaits the SDK's
+  // real interrupt() teardown internally (see claude.ts) -- but that alone
+  // doesn't stop the outer runPollLoop from starting a NEW query() the
+  // moment this function returns, which can happen almost immediately
+  // (stream.end() lets the SDK's own iterator complete well before
+  // interrupt()'s ~2s grace-then-kill window is done). Capturing the
+  // promise here and awaiting it in the finally block below closes that
+  // race: processQuery() won't return -- so the outer loop won't start a
+  // new query -- until the old process is confirmed torn down. Don't
+  // delete this alongside an unrelated refactor; it's part of the same
+  // revertable unit as claude.ts's tagged block.
+  let pendingAbort: Promise<void> | undefined;
+  // ===== END WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
   // Prompt queue for the exchange hook — each result event consumes the
   // oldest unanswered prompt, except a wrapping-retry result, which answers
   // the same prompt again. Unused (and unmaintained) when the provider
@@ -362,13 +459,82 @@ export async function processQuery(
   let pollInFlight = false;
   let endedForCommand = false;
   let corruptionStreak = 0;
+  // Tracks time since the last real SDK event (reset in the for-await loop
+  // below on every event, not just once at turn start) -- a hang can happen
+  // at minute 20 of an otherwise-healthy long turn just as easily as at the
+  // start, so the grace window has to follow "time since last progress,"
+  // not "time since this turn began."
+  let lastEventMs = Date.now();
+  let lastLivenessTickMs = 0;
   const pollHandle = setInterval(() => {
+    // Touch the heartbeat while we're still inside the known worst-case
+    // window for a provider request to fail cleanly on its own (PrefixRouter
+    // timeout x SDK retries -- see INFERENCE_HEARTBEAT_GRACE_MS). The main
+    // for-await loop only touches it when the SDK yields an event; without
+    // this, host-sweep's CLAIM_STUCK_MS (60s, no declared-timeout equivalent
+    // for inference the way Bash gets one) kills the container mid-turn
+    // before a slow/flaky request (e.g. a timed-out Ollama call PrefixRouter
+    // is retrying) ever gets a chance to fail cleanly and deliver an error.
+    //
+    // Deliberately bounded, not unconditional for the turn's whole lifetime:
+    // that would mask any hang, not just a slow inference call, behind the
+    // 30-min ABSOLUTE_CEILING_MS instead of the fast ~60-120s CLAIM_STUCK_MS
+    // host-sweep normally uses. Once the grace window elapses since the last
+    // real SDK event, we stop propping up the heartbeat and let host-sweep's
+    // normal fast-kill tolerance apply -- a turn stuck for some other reason
+    // (e.g. a wedged tool call) still dies quickly, same as before this fix.
+    const msSinceEvent = Date.now() - lastEventMs;
+    if (!done && msSinceEvent < INFERENCE_HEARTBEAT_GRACE_MS) touchHeartbeat();
+
+    // Unconditional liveness tick -- independent of touchHeartbeat's grace
+    // gating, so a stuck turn is distinguishable in the logs from a wedged
+    // Node process. If these stop appearing, the event loop itself is dead;
+    // if they keep appearing with a growing msSinceLastEvent, the SDK's
+    // underlying subprocess has gone silent without erroring or exiting
+    // (2026-07-10/11 incident: 33+ min silent, zero further PrefixRouter
+    // traffic for the turn's correlation id -- confirmed the hang was
+    // upstream of any network call).
+    if (!done && Date.now() - lastLivenessTickMs >= LIVENESS_TICK_MS) {
+      lastLivenessTickMs = Date.now();
+      diag('tick', { queryId, msSinceLastEvent: msSinceEvent, pollInFlight, turnAgeMs: Date.now() - queryStartedAt });
+    }
+
     if (done || pollInFlight || endedForCommand) return;
     pollInFlight = true;
 
     void (async () => {
       try {
         const pending = getPendingMessages();
+
+        // ===== WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
+        // Proactive hang recovery -- see the HANG_ABORT_URGENT_MS/
+        // HANG_ABORT_IDLE_MS declaration above for the full rationale.
+        // Needs `pending` (computed above) to pick the threshold, hence
+        // living here rather than in the synchronous part of this interval.
+        if (!done && !hangAbortFired) {
+          const hasNewWork = pending.length > 0;
+          const threshold = hasNewWork ? HANG_ABORT_URGENT_MS : HANG_ABORT_IDLE_MS;
+          if (msSinceEvent >= threshold) {
+            hangAbortFired = true;
+            let psSnapshot = '(unavailable)';
+            try {
+              const ps = spawnSync('ps', ['aux'], { encoding: 'utf-8', timeout: 5000 });
+              psSnapshot = ps.stdout || ps.stderr || '(empty)';
+            } catch (err) {
+              psSnapshot = `(ps failed: ${err instanceof Error ? err.message : String(err)})`;
+            }
+            diag('hang-abort', {
+              queryId,
+              msSinceLastEvent: msSinceEvent,
+              thresholdMs: threshold,
+              hadNewWork: hasNewWork,
+              psSnapshot,
+            });
+            pendingAbort = query.abort();
+            return;
+          }
+        }
+        // ===== END WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
 
         // Slash commands need a fresh query: /clear resets the SDK's
         // resume id (fixed at sdkQuery() time); admin/passthrough commands
@@ -383,7 +549,7 @@ export async function processQuery(
         if (pending.some((m) => isRunnerCommand(m))) {
           log('Pending slash command — aborting active stream so outer loop can process');
           endedForCommand = true;
-          query.abort();
+          pendingAbort = query.abort(); // WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort)
           return;
         }
 
@@ -471,6 +637,14 @@ export async function processQuery(
     for await (const event of query.events) {
       handleEvent(event, routing);
       touchHeartbeat();
+      // 'activity' fires on every internal SDK message (streaming-level, very
+      // frequent) -- only diag the meaningful state transitions, or this
+      // floods the log. 'activity' still resets lastEventMs below, same as
+      // any other event, so liveness tracking is unaffected.
+      if (event.type !== 'activity') {
+        diag('event', { queryId, eventType: event.type, msSincePrevEvent: Date.now() - lastEventMs });
+      }
+      lastEventMs = Date.now();
 
       if (event.type === 'init') {
         queryContinuation = event.continuation;
@@ -534,6 +708,7 @@ export async function processQuery(
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
+    queryErrored = true;
     notifyExchangeComplete(onExchangeComplete, {
       prompt: archivePrompts[0] ?? initialPrompt,
       result: `Error: ${errMsg}`,
@@ -543,7 +718,25 @@ export async function processQuery(
     throw err;
   } finally {
     done = true;
+    diag('query-end', {
+      queryId,
+      reason: hangAbortFired ? 'hang-abort' : queryErrored ? 'error' : 'natural',
+      durationMs: Date.now() - queryStartedAt,
+    });
     clearInterval(pollHandle);
+    // ===== WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
+    // Don't let processQuery() return (and thus don't let the outer loop
+    // start a new query()) until any triggered abort has actually finished
+    // tearing down the old process. See the pendingAbort declaration above
+    // and claude.ts's abort() for the full explanation.
+    if (pendingAbort) {
+      try {
+        await pendingAbort;
+      } catch {
+        // Already logged inside claude.ts's abort() -- nothing more to do.
+      }
+    }
+    // ===== END WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
   }
 
   return { continuation: queryContinuation };

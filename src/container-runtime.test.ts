@@ -112,8 +112,8 @@ describe('cleanupOrphans', () => {
 
   it('stops orphaned nanoclaw containers', () => {
     const containers = [
-      { name: 'nanoclaw-group1-111', labels: { [labelKey]: labelVal } },
-      { name: 'nanoclaw-group2-222', labels: { [labelKey]: labelVal } },
+      { id: 'nanoclaw-group1-111', configuration: { labels: { [labelKey]: labelVal } } },
+      { id: 'nanoclaw-group2-222', configuration: { labels: { [labelKey]: labelVal } } },
     ];
     mockExecSync.mockReturnValueOnce(JSON.stringify(containers));
     mockExecSync.mockReturnValue('');
@@ -128,7 +128,7 @@ describe('cleanupOrphans', () => {
   });
 
   it('does not stop containers from a different install', () => {
-    const containers = [{ name: 'nanoclaw-other-999', labels: { [labelKey]: 'different-slug' } }];
+    const containers = [{ id: 'nanoclaw-other-999', configuration: { labels: { [labelKey]: 'different-slug' } } }];
     mockExecSync.mockReturnValueOnce(JSON.stringify(containers));
 
     cleanupOrphans();
@@ -161,8 +161,8 @@ describe('cleanupOrphans', () => {
 
   it('continues stopping remaining containers when one stop fails', () => {
     const containers = [
-      { name: 'nanoclaw-a-1', labels: { [labelKey]: labelVal } },
-      { name: 'nanoclaw-b-2', labels: { [labelKey]: labelVal } },
+      { id: 'nanoclaw-a-1', configuration: { labels: { [labelKey]: labelVal } } },
+      { id: 'nanoclaw-b-2', configuration: { labels: { [labelKey]: labelVal } } },
     ];
     mockExecSync.mockReturnValueOnce(JSON.stringify(containers));
     mockExecSync.mockImplementationOnce(() => {
@@ -176,6 +176,64 @@ describe('cleanupOrphans', () => {
     expect(log.info).toHaveBeenCalledWith('Stopped orphaned containers', {
       count: 2,
       names: ['nanoclaw-a-1', 'nanoclaw-b-2'],
+    });
+  });
+
+  // Regression fixture — a trimmed but *real* sample of `container ls --format
+  // json` output (captured 2026-07-07). The bug this guards against: an
+  // earlier version of cleanupOrphans read top-level `name`/`labels` fields
+  // that don't exist in Apple Container's actual output (name is `id`, labels
+  // live under `configuration.labels`), so the orphan filter silently matched
+  // nothing on every run — containers accumulated across every host restart
+  // for weeks before it was caught. A hand-rolled mock shape can drift from
+  // reality the same way the buggy code did; this fixture can't.
+  it('matches real container ls --format json output shape', () => {
+    const realSample = JSON.stringify([
+      {
+        configuration: {
+          id: 'buildkit',
+          labels: {
+            'com.apple.container.plugin': 'builder',
+            'com.apple.container.resource.role': 'builder',
+          },
+        },
+        id: 'buildkit',
+        status: { state: 'running' },
+      },
+      {
+        configuration: {
+          id: `nanoclaw-v2-dm-with-dmj-1783339327910`,
+          labels: { [labelKey]: labelVal },
+        },
+        id: 'nanoclaw-v2-dm-with-dmj-1783339327910',
+        status: { state: 'running' },
+      },
+    ]);
+    mockExecSync.mockReturnValueOnce(realSample);
+    mockExecSync.mockReturnValueOnce('');
+
+    cleanupOrphans();
+
+    expect(log.info).toHaveBeenCalledWith('Stopped orphaned containers', {
+      count: 1,
+      names: ['nanoclaw-v2-dm-with-dmj-1783339327910'],
+    });
+  });
+
+  it('never stops a container in protectedNames, even if label-matched', () => {
+    const containers = [
+      { id: 'nanoclaw-live-1', configuration: { labels: { [labelKey]: labelVal } } },
+      { id: 'nanoclaw-dead-2', configuration: { labels: { [labelKey]: labelVal } } },
+    ];
+    mockExecSync.mockReturnValueOnce(JSON.stringify(containers));
+    mockExecSync.mockReturnValueOnce('');
+
+    cleanupOrphans(new Set(['nanoclaw-live-1']));
+
+    expect(mockExecSync).toHaveBeenCalledTimes(2);
+    expect(log.info).toHaveBeenCalledWith('Stopped orphaned containers', {
+      count: 1,
+      names: ['nanoclaw-dead-2'],
     });
   });
 });
