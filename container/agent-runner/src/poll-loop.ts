@@ -42,35 +42,42 @@ const INFERENCE_HEARTBEAT_GRACE_MS = 7 * 60 * 1000;
  */
 const LIVENESS_TICK_MS = 15 * 1000;
 
-/**
- * If no SDK event arrives for this long, proactively abort the query instead
- * of waiting for host-sweep's 30-min ABSOLUTE_CEILING_MS. 2026-07-10/11
- * incident: a turn hung for 33+ minutes with zero further PrefixRouter
- * traffic (confirmed via PrefixRouter's own jsonl logs) -- the SDK's
- * underlying CLI subprocess went silent without erroring or exiting, so
- * nothing in our own retry/timeout logic ever got a chance to fire.
- *
- * Originally set to 10 minutes (comfortably above
- * INFERENCE_HEARTBEAT_GRACE_MS, comfortably below ABSOLUTE_CEILING_MS) as a
- * conservative first cut. Confirmed same-night on a second, independent
- * occurrence — same silent-after-result shape, zero PrefixRouter traffic,
- * hang-abort fired cleanly and recovered in ~18s once triggered — that this
- * isn't a rare tail case, it's happening on essentially every turn. Waiting
- * 10 minutes for something that has never once resolved on its own is just
- * needless latency; shrunk to 90s. Still comfortably above
- * INFERENCE_HEARTBEAT_GRACE_MS's own worst-case-inference-timeout window? No
- * — INFERENCE_HEARTBEAT_GRACE_MS is 7 min, longer than this. That's fine:
- * they answer different questions. INFERENCE_HEARTBEAT_GRACE_MS bounds how
- * long we keep propping up the *heartbeat file* (a host-visible liveness
- * signal) past the last event; HANG_ABORT_MS bounds how long *we* wait before
- * giving up on this turn ourselves. If a genuinely slow-but-real inference
- * call turns out to need more than 90s, PrefixRouter's own request-start
- * logging (added alongside this change) will show a request was actually in
- * flight, and this value should grow back up — but two occurrences in one
- * night with zero real work happening during the wait argues for shrinking
- * first and re-widening only if evidence says otherwise.
- */
-const HANG_ABORT_MS = 90 * 1000;
+// ===== WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
+// See external-workarounds.md for the full incident. Hybrid threshold, not a
+// single flat timeout:
+//
+// - HANG_ABORT_URGENT_MS (90s): applied whenever something new is waiting
+//   for this session (a fresh chat message or a due task -- see the
+//   `pending.length > 0` check at the call site) while we're silent. A flat
+//   90s timeout applied unconditionally would risk killing a genuinely
+//   long-running legitimate turn (deep research, a big Bash job) just
+//   because it's quiet for a while -- so this only fires fast when there's
+//   an actual reason to hurry: someone's waiting on a reply.
+// - HANG_ABORT_IDLE_MS (30 min): applied when nothing new is waiting.
+//   Matches host-sweep's own ABSOLUTE_CEILING_MS (src/host-sweep.ts, host
+//   side) -- if we're going to self-abort proactively at the same point the
+//   host would otherwise force-kill the whole container, we might as well
+//   do it ourselves via the same clean interrupt()-based teardown.
+//
+// If new work shows up mid-silence, the threshold in effect is always
+// measured from the *original* last-event time, not from when the new work
+// arrived -- so a message arriving at, say, 10s of silence doesn't trigger
+// an immediate abort (waits until the 90s mark like any other case), but a
+// message arriving at the 5-minute mark (already past 90s) triggers an
+// abort on the very next tick, not at the 30-min mark.
+//
+// History: originally a single flat 10 minutes (comfortably above
+// INFERENCE_HEARTBEAT_GRACE_MS, comfortably below ABSOLUTE_CEILING_MS) as a
+// conservative first cut. Confirmed same-night on a second, independent
+// occurrence -- same silent-after-result shape, zero PrefixRouter traffic --
+// that this isn't a rare tail case, it's happening on essentially every
+// turn, which argued for shrinking to 90s flat. Reworked again same night
+// into this hybrid form once it was clear a flat short timeout risked
+// killing legitimate long-running turns that just happen to produce no SDK
+// event for a while.
+const HANG_ABORT_URGENT_MS = 90 * 1000;
+const HANG_ABORT_IDLE_MS = 30 * 60 * 1000;
+// ===== END WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) — constants =====
 
 /**
  * Structured JSONL diagnostic log -- separate from the plain-text `log()`
@@ -492,30 +499,42 @@ export async function processQuery(
       diag('tick', { queryId, msSinceLastEvent: msSinceEvent, pollInFlight, turnAgeMs: Date.now() - queryStartedAt });
     }
 
-    // Proactive hang recovery: if the SDK has gone silent for HANG_ABORT_MS,
-    // don't wait for host-sweep's 30-min ceiling. Snapshot the container's
-    // process table for postmortem (best-effort, never throws) then abort —
-    // the outer loop's catch/finally handles cleanup same as any other error.
-    if (!done && !hangAbortFired && msSinceEvent >= HANG_ABORT_MS) {
-      hangAbortFired = true;
-      let psSnapshot = '(unavailable)';
-      try {
-        const ps = spawnSync('ps', ['aux'], { encoding: 'utf-8', timeout: 5000 });
-        psSnapshot = ps.stdout || ps.stderr || '(empty)';
-      } catch (err) {
-        psSnapshot = `(ps failed: ${err instanceof Error ? err.message : String(err)})`;
-      }
-      diag('hang-abort', { queryId, msSinceLastEvent: msSinceEvent, hangAbortMs: HANG_ABORT_MS, psSnapshot });
-      pendingAbort = query.abort(); // WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort)
-      return;
-    }
-
     if (done || pollInFlight || endedForCommand) return;
     pollInFlight = true;
 
     void (async () => {
       try {
         const pending = getPendingMessages();
+
+        // ===== WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
+        // Proactive hang recovery -- see the HANG_ABORT_URGENT_MS/
+        // HANG_ABORT_IDLE_MS declaration above for the full rationale.
+        // Needs `pending` (computed above) to pick the threshold, hence
+        // living here rather than in the synchronous part of this interval.
+        if (!done && !hangAbortFired) {
+          const hasNewWork = pending.length > 0;
+          const threshold = hasNewWork ? HANG_ABORT_URGENT_MS : HANG_ABORT_IDLE_MS;
+          if (msSinceEvent >= threshold) {
+            hangAbortFired = true;
+            let psSnapshot = '(unavailable)';
+            try {
+              const ps = spawnSync('ps', ['aux'], { encoding: 'utf-8', timeout: 5000 });
+              psSnapshot = ps.stdout || ps.stderr || '(empty)';
+            } catch (err) {
+              psSnapshot = `(ps failed: ${err instanceof Error ? err.message : String(err)})`;
+            }
+            diag('hang-abort', {
+              queryId,
+              msSinceLastEvent: msSinceEvent,
+              thresholdMs: threshold,
+              hadNewWork: hasNewWork,
+              psSnapshot,
+            });
+            pendingAbort = query.abort();
+            return;
+          }
+        }
+        // ===== END WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
 
         // Slash commands need a fresh query: /clear resets the SDK's
         // resume id (fixed at sdkQuery() time); admin/passthrough commands
