@@ -108,6 +108,18 @@ This changes the likely implementation of §6/§7: instead of string-concatenati
 - Whether this also gives us `resume` for free — if context is rebuilt fresh every turn via synthetic messages, do we still need the SDK's own session-resume machinery, or can it be skipped?
 - Confirmed real risk: multiple concurrent sessions racing to build on the same nascent synthetic context. Surfaced during the same investigation that a wedged/hung SDK process could compound this (an old process still mutating shared state while a new one starts) — reinforces why §7a's queue/concurrency design (FIFO-per-session, global-then-lane semaphore ordering) matters even before this delivery mechanism is chosen.
 
+## 7c. Two recall paths, and a classifier gate on the automatic one (2026-07-11)
+
+A second, independent path has emerged alongside the mandatory pipeline in §7: a `recall` MCP tool (`container/agent-runner/src/mcp-tools/briefing.ts` + `src/modules/memory-briefing/index.ts`, built in a separate session against this same `briefer.ts`) that lets Lumen **ask** for a targeted briefing mid-turn — fire-and-forget over the outbound system-action channel, host runs `briefer` with just her supplied topic (no recent-turns window), delivers the result back as a normal inbound message and wakes the container. This is deliberately the on-request counterpart to §7's always-on pre-step, not a replacement for it.
+
+**Why this doesn't reopen the self-defeating-tool problem (§1, §6):** the concern in §1 was a memory system whose only access path is "the agent has to remember to check it" — the automatic pre-step exists precisely so recall doesn't depend on Lumen's judgment. `recall` doesn't undermine that as long as the automatic path stays mandatory-by-default; it's an *additional* path for when Lumen already knows she wants more than the default packet gave her.
+
+**Classifier gate, motivated by this second path existing:** not every turn needs a briefing ("Good morning!" doesn't need one every single morning). Proposed: a cheap, fast pre-check (heuristic or small/local model, sub-second) decides whether the mandatory pipeline stage actually invokes `briefer` for a given turn, or short-circuits to a no-op. Two things make this safe rather than a regression to §1's original failure:
+
+- **Bias the gate toward false positives, not false negatives.** A gate that wrongly *runs* a briefing nobody needed costs a few cents and a couple seconds. A gate that wrongly *skips* one silently reproduces the exact failure §7 was built to prevent. Tune for "brief when unsure," not for precision.
+- **`recall` is the gate's safety valve.** If the gate skips a briefing Lumen actually needed, she's not silently under-informed with no recourse — she can notice and call `recall` herself. This is what makes an imprecise gate acceptable: the on-request path catches what the automatic path misses, rather than the miss being final.
+- This doesn't weaken "mandatory" in §7 — the *pipeline stage* still always runs on message arrival, gated behind nothing the agent has to remember. What's now conditional is whether that stage's output is a real briefing or a fast no-op, which is a cost/latency optimization, not a re-introduction of agent-initiated-only recall.
+
 ## 8. Open questions (not yet resolved)
 
 - Exact vault frontmatter schema for ontological status / changelog — concept agreed, fields not finalized.
@@ -116,6 +128,8 @@ This changes the likely implementation of §6/§7: instead of string-concatenati
 - Whether/how shared prompt chunks between Seeker and the briefing agent get identified once they exist.
 - Whether `globalConcurrency=1` is actually viable in practice (part of the experiment) or becomes a bottleneck once real usage patterns show up.
 - Whether briefing delivery uses `isSynthetic`/`shouldQuery` synthetic messages (§7b) or plain prompt concatenation, and whether that lets session-resume be skipped entirely.
+- What the classifier gate (§7c) actually runs on — heuristic, small/local model, or something else — and whether its miss rate in practice makes `recall` a rarely-needed backstop or a heavily-used one.
+- Whether `Meta/scripts/vault-briefing` (a grep-based tool Lumen wrote for herself in the vault, container-mounted-path–based) stays, gets superseded by `recall`, or the two turn out to serve different needs.
 
 ## 9. Explicit non-goals (for now)
 
