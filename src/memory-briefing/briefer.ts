@@ -5,10 +5,14 @@ import { log } from '../log.js';
 
 const env = readEnvFile(['MBIF_VAULT_PATH', 'MBIF_BRIEFER_MODEL', 'MBIF_BRIEFER_OAUTH_TOKEN']);
 
-// ponytail: hardcoded to haiku while developing (cheap/fast); switch to briefer.md's own
-// frontmatter model (sonnet), or a local model, once the mechanism is proven out.
 const VAULT_PATH = process.env.MBIF_VAULT_PATH || env.MBIF_VAULT_PATH;
-const BRIEFER_MODEL = process.env.MBIF_BRIEFER_MODEL || env.MBIF_BRIEFER_MODEL || 'haiku';
+// Unset by default — omitting --model lets briefer.md's own frontmatter (model: sonnet)
+// govern. Was hardcoded to haiku while proving the mechanism out; haiku demonstrably
+// doesn't hold the template's edge-case rules under an ill-posed prompt (confirmed
+// 2026-07-13 — asked to brief on "ideas" David hadn't actually shared yet, haiku
+// produced out-of-spec filler instead of the "no relevant history" fallback line;
+// sonnet handled the same prompt correctly). Only set MBIF_BRIEFER_MODEL to override.
+const BRIEFER_MODEL = process.env.MBIF_BRIEFER_MODEL || env.MBIF_BRIEFER_MODEL;
 // A `claude setup-token` long-lived token — the host daemon runs as a launchd
 // LaunchAgent in its own audit session, which macOS silently denies interactive
 // Keychain access to, so the normal OAuth login (which works fine from a Terminal)
@@ -82,8 +86,7 @@ function runBrieferOnce(prompt: string): Promise<BrieferResult> {
     '--output-format',
     'json',
     '--no-session-persistence',
-    '--model',
-    BRIEFER_MODEL,
+    ...(BRIEFER_MODEL ? ['--model', BRIEFER_MODEL] : []),
     prompt,
   ];
 
