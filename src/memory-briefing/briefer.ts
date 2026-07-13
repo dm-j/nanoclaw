@@ -49,8 +49,24 @@ export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: strin
  * cwd set to the Obsidian vault project, so it picks up the vault's own
  * `.claude/agents/briefer.md` definition and tools. Returns the briefing
  * markdown from the agent's `result` field.
+ *
+ * Retries once on a non-timeout failure: this shares OAuth credentials with
+ * whatever interactive `claude` session is also running under this account,
+ * and a token-refresh race between the two produces a transient, instant 401
+ * ("invalid authentication credentials") that resolves itself a moment later.
  */
-export function runBriefer(prompt: string): Promise<BrieferResult> {
+export async function runBriefer(prompt: string): Promise<BrieferResult> {
+  try {
+    return await runBrieferOnce(prompt);
+  } catch (err) {
+    if ((err as Error).message.includes('timed out')) throw err;
+    log.warn('briefer failed, retrying once', { err });
+    await new Promise((r) => setTimeout(r, 1500));
+    return runBrieferOnce(prompt);
+  }
+}
+
+function runBrieferOnce(prompt: string): Promise<BrieferResult> {
   if (!VAULT_PATH) {
     return Promise.reject(new Error('MBIF_VAULT_PATH is not configured'));
   }
