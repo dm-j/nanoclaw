@@ -8,12 +8,18 @@ importers:
 
   .:
     dependencies:
+      '@chat-adapter/telegram':
+        specifier: 4.29.0
+        version: 4.29.0
       '@clack/core':
         specifier: ^1.2.0
         version: 1.2.0
       '@clack/prompts':
         specifier: ^1.2.0
         version: 1.2.0
+      '@nanoco/nanoclaw-dashboard':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@onecli-sh/sdk':
         specifier: 2.2.1
         version: 2.2.1
@@ -29,6 +35,9 @@ importers:
       kleur:
         specifier: ^4.1.5
         version: 4.1.5
+      undici:
+        specifier: 8.5.0
+        version: 8.5.0
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -71,6 +80,14 @@ importers:
         version: 4.1.4(@types/node@22.19.17)(vite@8.0.8(@types/node@22.19.17)(esbuild@0.27.7)(tsx@4.21.0)(yaml@2.9.0))
 
 packages:
+
+  '@chat-adapter/shared@4.29.0':
+    resolution: {integrity: sha512-ARqTDoHJHKN9rpytbFPJbNmqqx3fOg5xwsTZdlingQPAssOSeHDBdqrFJkgDhyCRGbmDtG09cuS0FkVzeoh2qg==}
+    engines: {node: '>=20'}
+
+  '@chat-adapter/telegram@4.29.0':
+    resolution: {integrity: sha512-015tU3HEjFQWw7DgebXWkDeQA6lTdTVEO4btAV3f6U1kEnOfjLVJq98latcsM1WkEvv+3LIFKpsz9pG53aamBw==}
+    engines: {node: '>=20'}
 
   '@clack/core@1.2.0':
     resolution: {integrity: sha512-qfxof/3T3t9DPU/Rj3OmcFyZInceqj/NVtO9rwIuJqCUgh32gwPjpFQQp/ben07qKlhpwq7GzfWpST4qdJ5Drg==}
@@ -299,6 +316,10 @@ packages:
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
+
+  '@nanoco/nanoclaw-dashboard@0.3.0':
+    resolution: {integrity: sha512-AT1sLe/PxtSMytMqXOH5xeoFw9gyYpEhXC4XIA4/940Fmw45FWAJfdQzyVRi9JZKhb2b6Qr6nqVfQRgAB3LoaA==}
+    hasBin: true
 
   '@napi-rs/wasm-runtime@1.1.4':
     resolution: {integrity: sha512-3NQNNgA1YSlJb/kMH1ildASP9HW7/7kYnRI2szWJaofaS1hWmbGI4H+d3+22aGzXXN9IJ+n+GiFVcGipJP18ow==}
@@ -1368,6 +1389,10 @@ packages:
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
 
+  undici@8.5.0:
+    resolution: {integrity: sha512-xamtWoB1EshgjpmlXd7GGm2VfdDtw1+rD8uhry8pSNW3If6S8E0m2T2+orSKeZXEn/aPJMviCpDBA65WJt8zhg==}
+    engines: {node: '>=22.19.0'}
+
   unified@11.0.5:
     resolution: {integrity: sha512-xKvGhPWw3k84Qjh8bI3ZeJjqnyadK+GEFtazSfZv/rKeTkTjOJho6mFqh2SM96iIcZokxiOpg78GazTSg8+KHA==}
 
@@ -1509,6 +1534,23 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  '@chat-adapter/shared@4.29.0':
+    dependencies:
+      chat: 4.29.0
+    transitivePeerDependencies:
+      - ai
+      - supports-color
+      - zod
+
+  '@chat-adapter/telegram@4.29.0':
+    dependencies:
+      '@chat-adapter/shared': 4.29.0
+      chat: 4.29.0
+    transitivePeerDependencies:
+      - ai
+      - supports-color
+      - zod
 
   '@clack/core@1.2.0':
     dependencies:
@@ -1674,6 +1716,8 @@ snapshots:
   '@humanwhocodes/retry@0.4.3': {}
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
+
+  '@nanoco/nanoclaw-dashboard@0.3.0': {}
 
   '@napi-rs/wasm-runtime@1.1.4(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)':
     dependencies:
@@ -2891,6 +2935,8 @@ snapshots:
   typescript@5.9.3: {}
 
   undici-types@6.21.0: {}
+
+  undici@8.5.0: {}
 
   unified@11.0.5:
     dependencies:

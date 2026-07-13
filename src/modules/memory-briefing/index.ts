@@ -16,6 +16,7 @@ import { getSession } from '../../db/sessions.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import type { Session } from '../../types.js';
 import { registerDeliveryAction } from '../../delivery.js';
+import { unguarded } from '../../guard/index.js';
 
 function notifyAgent(session: Session, text: string): void {
   writeSessionMessage(session.agent_group_id, session.id, {
@@ -52,4 +53,8 @@ async function handleRecall(content: Record<string, unknown>, session: Session):
   }
 }
 
-registerDeliveryAction('recall', handleRecall);
+registerDeliveryAction(
+  'recall',
+  handleRecall,
+  unguarded('read-only vault query — no privileged writes, nothing to gate'),
+);
