@@ -18,6 +18,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # ---------------------------------------------------------------------------
 # Config
@@ -30,6 +31,7 @@ marker_file  = sessions_dir / '.last-exported-uuid'
 agent_name = os.environ.get('AGENT_NAME', 'Lumen')
 user_name  = os.environ.get('USER_DISPLAY_NAME', 'David')
 user_slug  = os.environ.get('USER_SLUG', 'david')
+user_tz    = ZoneInfo(os.environ.get('USER_TIMEZONE', 'America/Chicago'))
 agent_slug = agent_name.lower()
 
 inbox_dir.mkdir(parents=True, exist_ok=True)
@@ -146,6 +148,10 @@ def speaker(role: str) -> str:
 def slug(role: str) -> str:
     return agent_slug if role == 'assistant' else user_slug
 
+def ts_local(ts: str) -> str:
+    """Local time + UTC offset, e.g. '2026-07-12T12:43:18-05:00' — human-facing header timestamp."""
+    return parse_ts(ts).astimezone(user_tz).isoformat(timespec='seconds')
+
 # ---------------------------------------------------------------------------
 # Resolve session log file
 # ---------------------------------------------------------------------------
@@ -187,7 +193,7 @@ for msg in new_messages:
     )
 
     # Session log: lightweight IR entry
-    log_entries.append(f'## {tsd} · {spk}\n{msg["text"]}')
+    log_entries.append(f'## {spk} — {ts_local(msg["timestamp"])}\n{msg["text"]}')
 
 # Append all entries to session log in one write
 with open(session_file, 'a') as f:

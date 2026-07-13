@@ -29,12 +29,16 @@ Hey Lumen, can you check my calendar for tomorrow?
 
 **Session log entry** (appended to `sessions/2026-06-29T143201Z-c40b79a0.md`):
 ```markdown
-## 2026-06-29T14:32:01Z · David
+## David — 2026-06-29T09:32:01-05:00
 Hey Lumen, can you check my calendar for tomorrow?
 
-## 2026-06-29T14:32:15Z · Lumen
+## Lumen — 2026-06-29T09:32:15-05:00
 Sure! You have a team standup at 9am and a dentist appointment at 3pm.
 ```
+
+Header timestamps are local (`USER_TIMEZONE`, default `America/Chicago`) with UTC offset —
+human-facing and directly addressable for wikilinks (`[[sessions-file#David — 2026-06-29T09:32:01-05:00]]`).
+Inbox frontmatter timestamps stay UTC (`Z`) for machine consumption.
 
 The session log has a YAML frontmatter header written once at session start:
 ```markdown
@@ -84,11 +88,12 @@ container config:
 ncl groups config update --id <group-id> \
   --env AGENT_NAME="Lumen" \
   --env USER_DISPLAY_NAME="David" \
-  --env USER_SLUG="david"
+  --env USER_SLUG="david" \
+  --env USER_TIMEZONE="America/Chicago"
 ```
 
 `WORKSPACE_DIR` defaults to `/workspace/agent` — only override if the group uses a
-different workspace layout.
+different workspace layout. `USER_TIMEZONE` (IANA name) defaults to `America/Chicago`.
 
 ## Phase 3 — Wire the Stop hook
 

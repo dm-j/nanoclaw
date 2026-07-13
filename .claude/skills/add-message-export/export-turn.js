@@ -12,6 +12,7 @@ const markerFile   = join(sessionsDir, '.last-exported-uuid');
 const agentName = process.env.AGENT_NAME        ?? 'Lumen';
 const userName  = process.env.USER_DISPLAY_NAME ?? 'David';
 const userSlug  = process.env.USER_SLUG         ?? 'david';
+const userTz    = process.env.USER_TIMEZONE     ?? 'America/Chicago';
 const agentSlug = agentName.toLowerCase();
 
 mkdirSync(inboxDir,    { recursive: true });
@@ -90,6 +91,24 @@ function tsDisplay(ts) { return parseTs(ts).toISOString().replace(/\.\d+Z$/, 'Z'
 function speaker(role) { return role === 'assistant' ? agentName : userName; }
 function slug(role)    { return role === 'assistant' ? agentSlug : userSlug; }
 
+// Local time + UTC offset, e.g. "2026-07-12T12:43:18-05:00" — human-facing header timestamp.
+function tsLocal(ts) {
+  const d = parseTs(ts);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: userTz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    timeZoneName: 'shortOffset',
+  }).formatToParts(d);
+  const get = (t) => parts.find((p) => p.type === t)?.value ?? '';
+  let offset = get('timeZoneName').replace('GMT', '') || '+00:00';
+  if (!offset.includes(':')) {
+    const sign = offset.startsWith('-') ? '-' : '+';
+    offset = `${sign}${offset.replace(/[+-]/, '').padStart(2, '0')}:00`;
+  }
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}${offset}`;
+}
+
 // Resolve session log file
 const sidShort  = (sessionId ?? 'unknown').slice(0, 8);
 const existing  = existsSync(sessionsDir)
@@ -118,7 +137,7 @@ for (const msg of newMessages) {
     `---\ntimestamp: ${tsd}\nspeaker: ${slg}\ndisplay_name: ${spk}\nsession_id: ${msg.session_id}\nuuid: ${msg.uuid}\n---\n\n${msg.text}\n`
   );
 
-  logEntries.push(`## ${tsd} · ${spk}\n${msg.text}`);
+  logEntries.push(`## ${spk} — ${tsLocal(msg.timestamp)}\n${msg.text}`);
 }
 
 appendFileSync(sessionFile, '\n' + logEntries.join('\n\n') + '\n');
