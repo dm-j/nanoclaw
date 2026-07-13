@@ -3,12 +3,18 @@ import { spawn } from 'child_process';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
 
-const env = readEnvFile(['MBIF_VAULT_PATH', 'MBIF_BRIEFER_MODEL']);
+const env = readEnvFile(['MBIF_VAULT_PATH', 'MBIF_BRIEFER_MODEL', 'MBIF_BRIEFER_OAUTH_TOKEN']);
 
 // ponytail: hardcoded to haiku while developing (cheap/fast); switch to briefer.md's own
 // frontmatter model (sonnet), or a local model, once the mechanism is proven out.
 const VAULT_PATH = process.env.MBIF_VAULT_PATH || env.MBIF_VAULT_PATH;
 const BRIEFER_MODEL = process.env.MBIF_BRIEFER_MODEL || env.MBIF_BRIEFER_MODEL || 'haiku';
+// A `claude setup-token` long-lived token — the host daemon runs as a launchd
+// LaunchAgent in its own audit session, which macOS silently denies interactive
+// Keychain access to, so the normal OAuth login (which works fine from a Terminal)
+// fails deterministically here. This bypasses Keychain entirely, still billed
+// against the Claude subscription rather than the API.
+const BRIEFER_OAUTH_TOKEN = process.env.MBIF_BRIEFER_OAUTH_TOKEN || env.MBIF_BRIEFER_OAUTH_TOKEN;
 
 const BRIEFER_TIMEOUT_MS = 120_000;
 
@@ -50,10 +56,8 @@ export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: strin
  * `.claude/agents/briefer.md` definition and tools. Returns the briefing
  * markdown from the agent's `result` field.
  *
- * Retries once on a non-timeout failure: this shares OAuth credentials with
- * whatever interactive `claude` session is also running under this account,
- * and a token-refresh race between the two produces a transient, instant 401
- * ("invalid authentication credentials") that resolves itself a moment later.
+ * Retries once on a non-timeout failure, as cheap insurance against any
+ * remaining transient failure (network blip, etc).
  */
 export async function runBriefer(prompt: string): Promise<BrieferResult> {
   try {
@@ -83,8 +87,10 @@ function runBrieferOnce(prompt: string): Promise<BrieferResult> {
     prompt,
   ];
 
+  const spawnEnv = BRIEFER_OAUTH_TOKEN ? { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: BRIEFER_OAUTH_TOKEN } : process.env;
+
   return new Promise<BrieferResult>((resolve, reject) => {
-    const proc = spawn('claude', args, { cwd: VAULT_PATH, stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn('claude', args, { cwd: VAULT_PATH, env: spawnEnv, stdio: ['ignore', 'pipe', 'pipe'] });
 
     const stdout: Buffer[] = [];
     const stderr: string[] = [];
