@@ -48,6 +48,7 @@ export interface ContainerConfig {
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
 export function configFromDb(row: ContainerConfigRow, group: AgentGroup): ContainerConfig {
+  const env = JSON.parse(row.env) as Record<string, string>;
   return {
     mcpServers: JSON.parse(row.mcp_servers) as Record<string, McpServerConfig>,
     packages: {
@@ -64,6 +65,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     maxMessagesPerPrompt: row.max_messages_per_prompt ?? undefined,
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
+    env: Object.keys(env).length > 0 ? env : undefined,
   };
 }
 
@@ -84,14 +86,6 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
   const p = path.join(GROUPS_DIR, group.folder, 'container.json');
   const dir = path.dirname(p);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-  // Preserve file-only fields (env) that have no DB column — §18.8.
-  try {
-    const existing = JSON.parse(fs.readFileSync(p, 'utf8'));
-    if (existing.env && !config.env) config.env = existing.env;
-  } catch {
-    /* first materialization or unreadable — nothing to preserve */
-  }
 
   fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
 

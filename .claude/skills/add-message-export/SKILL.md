@@ -81,19 +81,19 @@ cp .claude/skills/add-message-export/export-turn.js groups/<folder>/.hooks/expor
 
 ## Phase 2 — Configure speaker names
 
-The script reads display names from environment variables. Set them in the group's
-container config:
+The script reads display names from environment variables. Set them one at a time
+(`config set-env`/`config unset-env`, mirroring the `add-mcp-server` shape):
 
 ```bash
-ncl groups config update --id <group-id> \
-  --env AGENT_NAME="Lumen" \
-  --env USER_DISPLAY_NAME="David" \
-  --env USER_SLUG="david" \
-  --env USER_TIMEZONE="America/Chicago"
+ncl groups config set-env --id <group-id> --key AGENT_NAME --value "Lumen"
+ncl groups config set-env --id <group-id> --key USER_DISPLAY_NAME --value "David"
+ncl groups config set-env --id <group-id> --key USER_SLUG --value "david"
+ncl groups config set-env --id <group-id> --key USER_TIMEZONE --value "America/Chicago"
 ```
 
-`WORKSPACE_DIR` defaults to `/workspace/agent` — only override if the group uses a
-different workspace layout. `USER_TIMEZONE` (IANA name) defaults to `America/Chicago`.
+Requires `ncl groups restart` to take effect. `WORKSPACE_DIR` defaults to
+`/workspace/agent` — only override if the group uses a different workspace layout.
+`USER_TIMEZONE` (IANA name) defaults to `America/Chicago` if unset.
 
 ## Phase 3 — Wire the Stop hook
 
