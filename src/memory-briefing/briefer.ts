@@ -89,8 +89,9 @@ export function runBriefer(prompt: string): Promise<BrieferResult> {
     proc.on('close', (code) => {
       clearTimeout(timer);
       if (code !== 0) {
-        log.warn('briefer exited non-zero', { code, stderr: stderr.join('') });
-        reject(new Error(`briefer exited with code ${code}: ${stderr.join('')}`));
+        const stdoutText = Buffer.concat(stdout).toString('utf-8');
+        log.warn('briefer exited non-zero', { code, stderr: stderr.join(''), stdout: stdoutText });
+        reject(new Error(`briefer exited with code ${code}: ${stderr.join('') || stdoutText}`));
         return;
       }
       try {
