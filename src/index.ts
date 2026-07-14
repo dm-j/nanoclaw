@@ -20,6 +20,7 @@ import { startHostServicesProxy, stopHostServicesProxy } from './host-services-p
 import { registerMemsearchService } from './services/memsearch.js';
 import { startFeeds, stopFeeds } from './mailman/feeds.js';
 import { startInboxWatcher, stopInboxWatcher } from './mailman/inbox-watcher.js';
+import { startVaultInboxWatcher, stopVaultInboxWatcher } from './memory-briefing/vault-inbox-watcher.js';
 import { registerMailmanWebhook } from './mailman/webhook.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
@@ -195,6 +196,7 @@ async function main(): Promise<void> {
   startInboxWatcher();
   startFeeds();
   registerMailmanWebhook();
+  startVaultInboxWatcher();
 
   // Dashboard (optional; no-ops without DASHBOARD_SECRET)
   const { startDashboard } = await import('./dashboard-pusher.js');
@@ -219,6 +221,7 @@ async function shutdown(signal: string): Promise<void> {
   stopHostServicesProxy();
   stopInboxWatcher();
   stopFeeds();
+  stopVaultInboxWatcher();
   await stopCliServer();
   try {
     await teardownChannelAdapters();

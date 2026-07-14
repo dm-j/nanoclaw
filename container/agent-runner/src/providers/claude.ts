@@ -425,7 +425,44 @@ export class ClaudeProvider implements AgentProvider {
     const stream = new MessageStream();
     stream.push(input.prompt);
 
-    const instructions = input.systemContext?.instructions;
+    let instructions = input.systemContext?.instructions;
+
+    // working-memory.md is read fresh every turn and folded into the system
+    // prompt rather than pushed as a message — systemPrompt.append is an SDK
+    // option, not part of the conversation stream, so it never enters the
+    // resumable transcript `resume` replays. That gives always-current
+    // content with zero turn-over-turn accumulation, for free, with no new
+    // mechanism needed (see 01-Projects/Synthetic Context Delivery for the
+    // fancier synthetic-tool-call alternative this deliberately sidesteps).
+    const workingMemoryPath = path.join(input.cwd, 'working-memory.md');
+    const WORKING_MEMORY_SOFT_CAP_LINES = 40;
+    const WORKING_MEMORY_HARD_CAP_LINES = 60; // 50% over the file's own documented soft cap
+    let raw = '';
+    try {
+      raw = fs.readFileSync(workingMemoryPath, 'utf-8');
+    } catch {
+      // ENOENT — leave raw empty, handled below same as an empty file.
+    }
+    if (!raw.trim()) {
+      // Missing or blank — a single empty turn is otherwise enough to make
+      // Lumen forget the scratchpad exists at all. Rather than making her
+      // jump through hoops to recreate it from an instruction, just seed it
+      // from the template (same copy-if-missing pattern as memory-scaffold.ts)
+      // so this turn already has a populated file to inject.
+      const template = fs.readFileSync(path.join(import.meta.dir, '../memory-templates/working-memory.md'), 'utf-8');
+      fs.writeFileSync(workingMemoryPath, template);
+      raw = template;
+    }
+    const workingMemory = raw.trim();
+    // The "keep this up to date" instruction lives here, not in the file
+    // itself — if it lived in the file, Lumen deleting it (or the file
+    // getting truncated) would make the scratchpad look freeform/optional
+    // rather than a maintained live document.
+    instructions = `${instructions ?? ''}\n\n# Your working notes for this conversation (keep this file at ${workingMemoryPath} up to date at all times)\n\n${workingMemory}`;
+    const workingMemoryLines = workingMemory.split('\n').length;
+    if (workingMemoryLines > WORKING_MEMORY_HARD_CAP_LINES) {
+      instructions += `\n\n<system>working-memory.md is ${workingMemoryLines} lines, well past its ${WORKING_MEMORY_SOFT_CAP_LINES}-line soft cap. Offload settled/historical items into the vault (remember, or a proper note) and trim this file back down — it's a scratchpad, not an archive, and it's eating context you need for thinking.</system>`;
+    }
 
     // One correlation ID per turn (per `.query()` call, not per provider
     // instance -- the provider is long-lived across many turns). Every
