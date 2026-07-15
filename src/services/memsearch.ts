@@ -49,8 +49,24 @@ export function registerMemsearchService(): void {
 
       const subcommand = userArgs[0];
 
+      // --milvus-uri is only a valid option on subcommands that touch the
+      // index (index/search/stats/reset/compact/expand/watch/summarize) —
+      // Click rejects it as unrecognized on `config *`, `--version`, `--help`.
+      const MILVUS_URI_SUBCOMMANDS = new Set([
+        'index',
+        'search',
+        'stats',
+        'reset',
+        'compact',
+        'expand',
+        'watch',
+        'summarize',
+      ]);
+
       // Build the real memsearch args with injected scoping
-      const realArgs = [...userArgs, '--milvus-uri', milvusUri];
+      const realArgs = MILVUS_URI_SUBCOMMANDS.has(subcommand)
+        ? [...userArgs, '--milvus-uri', milvusUri]
+        : [...userArgs];
 
       // For index/watch commands, inject the memory directory as the path arg
       if ((subcommand === 'index' || subcommand === 'watch') && !userArgs.some((a) => a.startsWith('/'))) {

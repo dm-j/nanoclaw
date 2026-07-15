@@ -79,6 +79,12 @@ export interface ProviderOptions {
    * through to the underlying SDK. If omitted, the SDK default is used.
    */
   effort?: string;
+  /**
+   * Active model's real context window, in tokens. Host-side spawnContainer()
+   * refuses to start a container without this set, so providers that need it
+   * (e.g. Claude, to size its auto-compact window) can assume it's present.
+   */
+  contextWindow?: number;
 }
 
 export interface QueryInput {

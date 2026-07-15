@@ -1,0 +1,5 @@
+#!/bin/sh
+# Convenience alias so the agent can just call `obsidian ...` in Bash instead
+# of `host-shim obsidian ...`. Pure passthrough — host-shim (and the
+# obsidian-host whitelist script) do all the actual work.
+exec host-shim obsidian "$@"

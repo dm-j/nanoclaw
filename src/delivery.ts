@@ -226,6 +226,13 @@ export async function deliverSessionMessages(session: Session): Promise<void> {
 // large DB) on every 1s poll tick while the same corruption keeps throwing.
 const corruptionFlagged = new Set<string>();
 
+// Consecutive SQLITE_READONLY_ROLLBACK failures per `${sessionId}:${db}`.
+// This error means SQLite is mid-recovery of a hot rollback journal — a
+// transient lock state, not corruption — so it gets retries (the ~1s poll
+// loop is the retry) before being treated as a real corruption signal.
+const readonlyRollbackCounts = new Map<string, number>();
+const READONLY_ROLLBACK_THRESHOLD = 3;
+
 /** Matches the SQLite error shapes corruption produces — not ordinary busy/lock errors. */
 function looksLikeCorruption(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -234,27 +241,37 @@ function looksLikeCorruption(err: unknown): boolean {
 
 /** Runs a DB read, and on a corruption-shaped error, runs integrity_check and reports it once per session+db. */
 function checked<T>(db: Database.Database, dbKind: 'inbound' | 'outbound', session: Session, fn: () => T): T {
+  const flagKey = `${session.id}:${dbKind}`;
   try {
-    return fn();
+    const result = fn();
+    readonlyRollbackCounts.delete(flagKey);
+    return result;
   } catch (err) {
-    const flagKey = `${session.id}:${dbKind}`;
-    if (looksLikeCorruption(err) && !corruptionFlagged.has(flagKey)) {
-      corruptionFlagged.add(flagKey);
-      const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>;
-      const integrityCheck = integrity.map((r) => r.integrity_check);
-      log.error(`SESSION DB CORRUPTED — ${dbKind}.db failed integrity_check, messages may be silently lost`, {
-        sessionId: session.id,
-        agentGroupId: session.agent_group_id,
-        integrityCheck,
-        triggerErr: err,
-      });
-      notifySessionDbCorrupted({
-        sessionId: session.id,
-        agentGroupId: session.agent_group_id,
-        db: dbKind,
-        integrityCheck,
-      });
+    if (!looksLikeCorruption(err) || corruptionFlagged.has(flagKey)) throw err;
+
+    const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+    if (code === 'SQLITE_READONLY_ROLLBACK') {
+      const count = (readonlyRollbackCounts.get(flagKey) ?? 0) + 1;
+      readonlyRollbackCounts.set(flagKey, count);
+      if (count < READONLY_ROLLBACK_THRESHOLD) throw err;
     }
+
+    corruptionFlagged.add(flagKey);
+    readonlyRollbackCounts.delete(flagKey);
+    const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>;
+    const integrityCheck = integrity.map((r) => r.integrity_check);
+    log.error(`SESSION DB CORRUPTED — ${dbKind}.db failed integrity_check, messages may be silently lost`, {
+      sessionId: session.id,
+      agentGroupId: session.agent_group_id,
+      integrityCheck,
+      triggerErr: err,
+    });
+    notifySessionDbCorrupted({
+      sessionId: session.id,
+      agentGroupId: session.agent_group_id,
+      db: dbKind,
+      integrityCheck,
+    });
     throw err;
   }
 }

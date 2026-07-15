@@ -67,6 +67,7 @@ export function backfillContainerConfigs(): void {
       additional_mounts: JSON.stringify(legacy.additionalMounts ?? []),
       env: JSON.stringify(legacy.env ?? {}),
       cli_scope: 'group',
+      context_window: null,
       updated_at: new Date().toISOString(),
     };
 

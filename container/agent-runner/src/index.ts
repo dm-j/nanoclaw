@@ -45,7 +45,18 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const providerName = config.provider.toLowerCase() as ProviderName;
 
-  log(`Starting v2 agent-runner (provider: ${providerName})`);
+  // Defense-in-depth: the host's spawnContainer() already refuses to start a
+  // container without a configured context window (container-runner.ts), so
+  // this should be unreachable in normal operation. Kept as a second gate in
+  // case a stale/hand-edited container.json ever bypasses that host check —
+  // failing loudly here beats an agent silently running past its real
+  // context window with no compaction ever triggering.
+  if (!config.contextWindow) {
+    log('FATAL: no contextWindow set in container.json — refusing to start. Fix with: ncl groups config update --context-window <tokens>');
+    process.exit(1);
+  }
+
+  log(`Starting v2 agent-runner (provider: ${providerName}, contextWindow: ${config.contextWindow})`);
 
   // Runtime-generated system-prompt addendum: agent identity (name) plus
   // the live destinations map. Everything else (capabilities, per-module
@@ -99,6 +110,7 @@ async function main(): Promise<void> {
     additionalDirectories: additionalDirectories.length > 0 ? additionalDirectories : undefined,
     model: config.model,
     effort: config.effort,
+    contextWindow: config.contextWindow,
   });
 
   // Providers that lack native memory opt in via `usesMemoryScaffold`; for them

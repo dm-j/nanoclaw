@@ -337,14 +337,37 @@ function transcriptStartMs(transcriptPath: string): number | null {
 // ── Provider ──
 
 /**
- * Claude Code auto-compacts context at this window (tokens). Kept here so
- * the generic bootstrap doesn't need to know about Claude-specific env vars.
+ * Fraction of the model's real context window reserved as headroom before
+ * Claude Code auto-compacts. Matches the ratio of the old hardcoded default
+ * (165000 / 200000 = 0.825) so behavior on Claude models is unchanged;
+ * scales down automatically for smaller-context models instead of silently
+ * reusing a Claude-sized number.
+ */
+const AUTO_COMPACT_HEADROOM_RATIO = 0.825;
+
+/**
+ * Claude Code auto-compacts context at this window (tokens), derived from
+ * the active model's real context window (`contextWindow`, required — see
+ * container-runner.ts's spawn-time gate). Kept here so the generic bootstrap
+ * doesn't need to know about Claude-specific env vars.
  *
  * Operator override: set CLAUDE_CODE_AUTO_COMPACT_WINDOW in the host env to
  * raise or lower the threshold without editing source — useful when running
  * with a 1M-context model variant or when emergency-tuning a deployment.
  */
-const CLAUDE_CODE_AUTO_COMPACT_WINDOW = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '165000';
+function resolveAutoCompactWindow(contextWindow: number | undefined): string {
+  if (process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW) return process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  if (!contextWindow) {
+    // Should be unreachable — container-runner.ts refuses to spawn without
+    // a configured context window. Fail loudly rather than silently reusing
+    // a Claude-200k-shaped default that could be wrong for the active model.
+    throw new Error(
+      'ClaudeProvider: no contextWindow configured — refusing to guess an auto-compact window. ' +
+        'Set one via `ncl groups config update --context-window <tokens>`.',
+    );
+  }
+  return String(Math.floor(contextWindow * AUTO_COMPACT_HEADROOM_RATIO));
+}
 
 /**
  * Stale-session detection. Matches Claude Code's error text when a
@@ -371,7 +394,7 @@ export class ClaudeProvider implements AgentProvider {
     this.effort = options.effort;
     this.env = {
       ...(options.env ?? {}),
-      CLAUDE_CODE_AUTO_COMPACT_WINDOW,
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: resolveAutoCompactWindow(options.contextWindow),
     };
   }
 

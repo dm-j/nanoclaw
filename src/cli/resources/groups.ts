@@ -27,6 +27,7 @@ function presentConfig(row: ContainerConfigRow): Record<string, unknown> {
     image_tag: row.image_tag,
     assistant_name: row.assistant_name,
     max_messages_per_prompt: row.max_messages_per_prompt,
+    context_window: row.context_window,
     skills: JSON.parse(row.skills),
     mcp_servers: JSON.parse(row.mcp_servers),
     packages_apt: JSON.parse(row.packages_apt),
@@ -257,7 +258,9 @@ registerResource({
       access: 'approval',
       description:
         'Update container config scalar fields. Changes are saved but do NOT take effect until you run `ncl groups restart`. ' +
-        'Use --id <group-id> and any of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope.',
+        'Use --id <group-id> and any of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope, --context-window. ' +
+        '--context-window (tokens) is required before a container can spawn at all — see `ncl groups restart` failing with "refusing to spawn" ' +
+        "after a model swap. There is no cross-model default; look up the active model's real context window and set it explicitly.",
       handler: async (args) => {
         const id = args.id as string;
         if (!id) throw new Error('--id is required');
@@ -267,7 +270,14 @@ registerResource({
         const updates: Partial<
           Pick<
             ContainerConfigRow,
-            'provider' | 'model' | 'effort' | 'image_tag' | 'assistant_name' | 'max_messages_per_prompt' | 'cli_scope'
+            | 'provider'
+            | 'model'
+            | 'effort'
+            | 'image_tag'
+            | 'assistant_name'
+            | 'max_messages_per_prompt'
+            | 'cli_scope'
+            | 'context_window'
           >
         > = {};
         if (args.provider !== undefined) updates.provider = args.provider as string;
@@ -284,10 +294,18 @@ registerResource({
           }
           updates.cli_scope = scope;
         }
+        if (args['context-window'] !== undefined || args.context_window !== undefined) {
+          const raw = (args['context-window'] ?? args.context_window) as string | number;
+          const n = Number(raw);
+          if (!Number.isInteger(n) || n <= 0) {
+            throw new Error('--context-window must be a positive integer (tokens)');
+          }
+          updates.context_window = n;
+        }
 
         if (Object.keys(updates).length === 0) {
           throw new Error(
-            'Nothing to update — provide at least one of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope',
+            'Nothing to update — provide at least one of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope, --context-window',
           );
         }
 

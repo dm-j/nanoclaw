@@ -26,6 +26,8 @@ export interface ContainerConfigRow {
   additional_mounts: string; // JSON: AdditionalMountConfig[]
   env: string; // JSON: Record<string, string>
   cli_scope: string; // 'disabled' | 'group' | 'global'
+  /** Active model's real context window, in tokens. Required before spawn — see container-runner.ts. */
+  context_window: number | null;
   updated_at: string;
 }
 

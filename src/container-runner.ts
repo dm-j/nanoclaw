@@ -256,6 +256,21 @@ async function spawnContainer(session: Session): Promise<void> {
   // and buildContainerArgs so we don't re-read.
   const containerConfig = materializeContainerJson(agentGroup.id);
 
+  // Hard gate: a model's context window must be configured before its
+  // container ever starts. Without this, swapping a group onto a
+  // smaller-context model (e.g. Claude → a local Ollama model) silently
+  // reuses whatever compact-window default the provider ships with —
+  // sized for Claude's 200k window — and the agent can blow straight past
+  // the real window with no compaction ever triggering. Refusing to spawn
+  // is the loud failure mode; a quietly wrong default is the dangerous one.
+  if (!containerConfig.contextWindow) {
+    throw new Error(
+      `No context window configured for agent group "${agentGroup.name}" (${agentGroup.id}), ` +
+        `model "${containerConfig.model ?? '(default)'}" — refusing to spawn. Set one with: ` +
+        `ncl groups config update --id ${agentGroup.id} --context-window <tokens>`,
+    );
+  }
+
   // Per-group filesystem state lives forever after first creation. Init is
   // idempotent: it only writes paths that don't already exist, so this call
   // is a no-op for groups that have spawned before. Runs before the provider
@@ -676,7 +691,12 @@ async function buildContainerArgs(
   args.push('-e', `NO_PROXY=${CONTAINER_HOST_GATEWAY}`);
   args.push('-e', `no_proxy=${CONTAINER_HOST_GATEWAY}`);
   // Prepend stub bin dir so memsearch (and any future stubs) are in PATH.
-  args.push('-e', 'PATH=/opt/nanoclaw-stubs:/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin');
+  // /home/node/.local/bin holds the auto-generated tools/ wrappers (below) —
+  // this process runs as uid 501 (non-root), which can't write /usr/local/bin.
+  args.push(
+    '-e',
+    'PATH=/home/node/.local/bin:/opt/nanoclaw-stubs:/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+  );
 
   // Per-agent-group env overrides (file-only field in container.json).
   // Applied after OneCLI so they win over proxy-injected values.
@@ -693,7 +713,25 @@ async function buildContainerArgs(
   const imageTag = containerConfig.imageTag || CONTAINER_IMAGE;
   args.push(imageTag);
 
-  args.push('-c', 'exec bun run /app/src/index.ts');
+  // This bypasses /app/entrypoint.sh entirely (see comment above), which
+  // means its PATH-wrapper generation for container/agent-runner/src/tools/
+  // never runs either — inlined here instead of restoring the full
+  // entrypoint.sh, since that script's mount-staging block is a separate,
+  // unverified code path we don't want to risk exercising on every spawn.
+  const TOOL_WRAPPER_SETUP = `
+mkdir -p /home/node/.local/bin
+for f in /app/src/tools/*.ts; do
+  [ -f "$f" ] || continue
+  name=$(basename "$f" .ts)
+  printf '#!/bin/sh\\nexec bun "%s" "$@"\\n' "$f" > "/home/node/.local/bin/$name"
+  chmod +x "/home/node/.local/bin/$name"
+done
+for f in /app/src/tools/*; do
+  [ -f "$f" ] && [ -x "$f" ] && [ "\${f##*.}" != "ts" ] && [ "\${f##*.}" != "md" ] || continue
+  cp "$f" "/home/node/.local/bin/$(basename "$f")"
+done`;
+
+  args.push('-c', `${TOOL_WRAPPER_SETUP}\nexec bun run /app/src/index.ts`);
 
   return args;
 }

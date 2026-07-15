@@ -18,6 +18,8 @@ export interface RunnerConfig {
   mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
   model?: string;
   effort?: string;
+  /** Active model's real context window, in tokens. Required — see main()'s fatal check. */
+  contextWindow?: number;
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -47,6 +49,7 @@ export function loadConfig(): RunnerConfig {
     mcpServers: (raw.mcpServers as RunnerConfig['mcpServers']) || {},
     model: (raw.model as string) || undefined,
     effort: (raw.effort as string) || undefined,
+    contextWindow: typeof raw.contextWindow === 'number' ? raw.contextWindow : undefined,
   };
 
   return _config;

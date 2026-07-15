@@ -14,6 +14,11 @@ logs/
 # Groups - per-installation state, not tracked
 groups/*
 
+# Host-shim whitelist scripts - host-specific, potentially sensitive
+host-shims/*
+!host-shims/.gitkeep
+!host-shims/README.md
+
 # Composer-managed CLAUDE.md artifacts (regenerated every spawn) and
 # per-group memory (CLAUDE.local.md) must never be committed.
 **/CLAUDE.local.md

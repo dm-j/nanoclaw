@@ -62,6 +62,12 @@ export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const TEMPLATES_DIR = process.env.NANOCLAW_TEMPLATES_DIR
   ? path.resolve(process.env.NANOCLAW_TEMPLATES_DIR)
   : path.resolve(PROJECT_ROOT, 'templates');
+// Whitelist folder for the host-shim relay: presence of a `<name>-host`
+// executable here is what lets a container-side `host-shim <name>` call
+// through. Never mounted into any container.
+export const HOST_SHIMS_DIR = process.env.NANOCLAW_HOST_SHIMS_DIR
+  ? path.resolve(process.env.NANOCLAW_HOST_SHIMS_DIR)
+  : path.resolve(PROJECT_ROOT, 'host-shims');
 
 // Per-checkout image tag so two installs on the same host don't share
 // `nanoclaw-agent:latest` and clobber each other on rebuild.

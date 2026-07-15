@@ -44,6 +44,8 @@ export interface ContainerConfig {
   model?: string;
   effort?: string;
   env?: Record<string, string>;
+  /** Active model's real context window, in tokens. Required — see container-runner.ts spawnContainer(). */
+  contextWindow?: number;
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -66,6 +68,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
     env: Object.keys(env).length > 0 ? env : undefined,
+    contextWindow: row.context_window ?? undefined,
   };
 }
 

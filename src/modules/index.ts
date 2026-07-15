@@ -23,3 +23,4 @@ import './agent-to-agent/index.js';
 import './self-mod/index.js';
 import './memory-briefing/index.js';
 import './db-backup/index.js';
+import './host-shim/index.js';
