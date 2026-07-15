@@ -41,6 +41,29 @@ import {
 import { log } from './log.js';
 import type { Session } from './types.js';
 
+/**
+ * Fired whenever a message is written into a session's inbound.db — used by
+ * db-backup (see src/modules/db-backup/) to debounce snapshot timing off
+ * real activity. Narrow lifecycle hook, not a general event bus — same
+ * shape as delivery.ts's onDeliveryAdapterReady / onSessionDbCorrupted.
+ */
+type SessionActivityCallback = (agentGroupId: string, sessionId: string) => void;
+const sessionActivityCallbacks: SessionActivityCallback[] = [];
+
+export function onSessionActivity(cb: SessionActivityCallback): void {
+  sessionActivityCallbacks.push(cb);
+}
+
+function notifySessionActivity(agentGroupId: string, sessionId: string): void {
+  for (const cb of sessionActivityCallbacks) {
+    try {
+      cb(agentGroupId, sessionId);
+    } catch (err) {
+      log.error('onSessionActivity callback threw', { err });
+    }
+  }
+}
+
 /** Root directory for all session data. */
 export function sessionsBaseDir(): string {
   return path.join(DATA_DIR, 'v2-sessions');
@@ -272,6 +295,7 @@ export function writeSessionMessage(
   } finally {
     db.close();
   }
+  notifySessionActivity(agentGroupId, sessionId);
 
   updateSession(sessionId, { last_active: new Date().toISOString() });
 }

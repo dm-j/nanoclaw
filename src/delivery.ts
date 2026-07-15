@@ -104,6 +104,54 @@ export function onDeliveryAdapterReady(cb: AdapterReadyCallback): void {
   }
 }
 
+/**
+ * Callbacks fired when a session DB fails integrity_check after a corruption-
+ * shaped SQLite error. Lets the approvals module DM the owner without core
+ * depending on it directly — same shape as onDeliveryAdapterReady above.
+ */
+export interface SessionDbCorruptedEvent {
+  sessionId: string;
+  agentGroupId: string;
+  db: 'inbound' | 'outbound';
+  integrityCheck: string[];
+}
+type SessionDbCorruptedCallback = (event: SessionDbCorruptedEvent) => void | Promise<void>;
+const sessionDbCorruptedCallbacks: SessionDbCorruptedCallback[] = [];
+
+export function onSessionDbCorrupted(cb: SessionDbCorruptedCallback): void {
+  sessionDbCorruptedCallbacks.push(cb);
+}
+
+function notifySessionDbCorrupted(event: SessionDbCorruptedEvent): void {
+  for (const cb of sessionDbCorruptedCallbacks) {
+    void Promise.resolve()
+      .then(() => cb(event))
+      .catch((err) => log.error('onSessionDbCorrupted callback threw', { err }));
+  }
+}
+
+/**
+ * Fired after a message is successfully delivered (markDelivered succeeded).
+ * Used by db-backup to promote a pending snapshot to verified — a completed
+ * round-trip is the proof the DB was actually healthy, not just present.
+ */
+type MessageDeliveredCallback = (agentGroupId: string, sessionId: string) => void;
+const messageDeliveredCallbacks: MessageDeliveredCallback[] = [];
+
+export function onMessageDelivered(cb: MessageDeliveredCallback): void {
+  messageDeliveredCallbacks.push(cb);
+}
+
+function notifyMessageDelivered(agentGroupId: string, sessionId: string): void {
+  for (const cb of messageDeliveredCallbacks) {
+    try {
+      cb(agentGroupId, sessionId);
+    } catch (err) {
+      log.error('onMessageDelivered callback threw', { err });
+    }
+  }
+}
+
 export function setDeliveryAdapter(adapter: ChannelDeliveryAdapter): void {
   deliveryAdapter = adapter;
   // Forward to the typing module so it can fire setTyping on its own
@@ -173,6 +221,44 @@ export async function deliverSessionMessages(session: Session): Promise<void> {
   }
 }
 
+// Sessions already flagged corrupt this process lifetime, keyed by
+// `${sessionId}:${db}` — avoids re-running integrity_check (can be slow on a
+// large DB) on every 1s poll tick while the same corruption keeps throwing.
+const corruptionFlagged = new Set<string>();
+
+/** Matches the SQLite error shapes corruption produces — not ordinary busy/lock errors. */
+function looksLikeCorruption(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /malformed|corrupt|readonly database|out of order|missing from index/i.test(msg);
+}
+
+/** Runs a DB read, and on a corruption-shaped error, runs integrity_check and reports it once per session+db. */
+function checked<T>(db: Database.Database, dbKind: 'inbound' | 'outbound', session: Session, fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    const flagKey = `${session.id}:${dbKind}`;
+    if (looksLikeCorruption(err) && !corruptionFlagged.has(flagKey)) {
+      corruptionFlagged.add(flagKey);
+      const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>;
+      const integrityCheck = integrity.map((r) => r.integrity_check);
+      log.error(`SESSION DB CORRUPTED — ${dbKind}.db failed integrity_check, messages may be silently lost`, {
+        sessionId: session.id,
+        agentGroupId: session.agent_group_id,
+        integrityCheck,
+        triggerErr: err,
+      });
+      notifySessionDbCorrupted({
+        sessionId: session.id,
+        agentGroupId: session.agent_group_id,
+        db: dbKind,
+        integrityCheck,
+      });
+    }
+    throw err;
+  }
+}
+
 async function drainSession(session: Session): Promise<void> {
   const agentGroup = getAgentGroup(session.agent_group_id);
   if (!agentGroup) return;
@@ -188,22 +274,23 @@ async function drainSession(session: Session): Promise<void> {
 
   try {
     // Read all due messages from outbound.db (read-only)
-    const allDue = getDueOutboundMessages(outDb);
+    const allDue = checked(outDb, 'outbound', session, () => getDueOutboundMessages(outDb));
     if (allDue.length === 0) return;
 
     // Filter out already-delivered messages using inbound.db's delivered table
-    const delivered = getDeliveredIds(inDb);
+    const delivered = checked(inDb, 'inbound', session, () => getDeliveredIds(inDb));
     const undelivered = allDue.filter((m) => !delivered.has(m.id));
     if (undelivered.length === 0) return;
 
     // Ensure platform_message_id column exists (migration for existing sessions)
-    migrateDeliveredTable(inDb);
+    checked(inDb, 'inbound', session, () => migrateDeliveredTable(inDb));
 
     for (const msg of undelivered) {
       try {
         const platformMsgId = await deliverMessage(msg, session, inDb);
-        markDelivered(inDb, msg.id, platformMsgId ?? null);
+        checked(inDb, 'inbound', session, () => markDelivered(inDb, msg.id, platformMsgId ?? null));
         deliveryAttempts.delete(msg.id);
+        notifyMessageDelivered(session.agent_group_id, session.id);
 
         // Pause the typing indicator after a real user-facing message
         // lands on the user's screen, so the client has time to visually
@@ -224,7 +311,7 @@ async function drainSession(session: Session): Promise<void> {
             attempts,
             err,
           });
-          markDeliveryFailed(inDb, msg.id);
+          checked(inDb, 'inbound', session, () => markDeliveryFailed(inDb, msg.id));
           deliveryAttempts.delete(msg.id);
         } else {
           log.warn('Message delivery failed, will retry', {
