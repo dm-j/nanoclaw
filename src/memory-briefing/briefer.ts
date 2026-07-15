@@ -3,7 +3,7 @@ import { spawn } from 'child_process';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
 
-const env = readEnvFile(['MBIF_VAULT_PATH', 'MBIF_BRIEFER_MODEL', 'MBIF_BRIEFER_OAUTH_TOKEN']);
+const env = readEnvFile(['MBIF_VAULT_PATH', 'MBIF_BRIEFER_MODEL', 'MBIF_BRIEFER_OAUTH_TOKEN', 'MBIF_BRIEFER_BASE_URL']);
 
 const VAULT_PATH = process.env.MBIF_VAULT_PATH || env.MBIF_VAULT_PATH;
 // Unset by default — omitting --model lets briefer.md's own frontmatter (model: sonnet)
@@ -19,6 +19,13 @@ const BRIEFER_MODEL = process.env.MBIF_BRIEFER_MODEL || env.MBIF_BRIEFER_MODEL;
 // fails deterministically here. This bypasses Keychain entirely, still billed
 // against the Claude subscription rather than the API.
 const BRIEFER_OAUTH_TOKEN = process.env.MBIF_BRIEFER_OAUTH_TOKEN || env.MBIF_BRIEFER_OAUTH_TOKEN;
+// Deliberately NOT the shared ANTHROPIC_BASE_URL used by the container —
+// that's set to host.docker.internal, which only resolves from inside the
+// container and hangs (rather than fails fast) when a host-side process
+// tries it. This process talks to PrefixRouter directly, so localhost.
+// Only needed to route non-Anthropic --model values (e.g. ollama/* prefixes);
+// leave unset to keep the CLI talking to api.anthropic.com as before.
+const ANTHROPIC_BASE_URL = process.env.MBIF_BRIEFER_BASE_URL || env.MBIF_BRIEFER_BASE_URL;
 
 const BRIEFER_TIMEOUT_MS = 120_000;
 
@@ -90,7 +97,11 @@ function runBrieferOnce(prompt: string): Promise<BrieferResult> {
     prompt,
   ];
 
-  const spawnEnv = BRIEFER_OAUTH_TOKEN ? { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: BRIEFER_OAUTH_TOKEN } : process.env;
+  const spawnEnv = {
+    ...process.env,
+    ...(BRIEFER_OAUTH_TOKEN ? { CLAUDE_CODE_OAUTH_TOKEN: BRIEFER_OAUTH_TOKEN } : {}),
+    ...(ANTHROPIC_BASE_URL ? { ANTHROPIC_BASE_URL } : {}),
+  };
 
   return new Promise<BrieferResult>((resolve, reject) => {
     const proc = spawn('claude', args, { cwd: VAULT_PATH, env: spawnEnv, stdio: ['ignore', 'pipe', 'pipe'] });
