@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 
-import { resolveProviderName } from './container-runner.js';
+import { applyOneCLIContainerConfig, resolveProviderName } from './container-runner.js';
+import { CONTAINER_HOST_GATEWAY } from './container-runtime.js';
 
 describe('resolveProviderName', () => {
   it('prefers session over container config', () => {
@@ -25,6 +26,49 @@ describe('resolveProviderName', () => {
   it('treats empty string as unset (falls through)', () => {
     expect(resolveProviderName('', 'opencode')).toBe('opencode');
     expect(resolveProviderName(null, '')).toBe('claude');
+  });
+});
+
+describe('applyOneCLIContainerConfig proxy rewrite', () => {
+  // OneCLI proxy URLs carry basic-auth userinfo (http://x:token@host:10255).
+  // Regression: an earlier regex assumed no userinfo and silently failed to
+  // rewrite, leaking the host-only OneCLI proxy straight into the container.
+  it('rewrites host:port to the host-services-proxy while preserving credentials', () => {
+    const args: string[] = [];
+    applyOneCLIContainerConfig(
+      args,
+      {
+        env: {
+          HTTPS_PROXY: 'http://x:aoc_token123@host.docker.internal:10255',
+          https_proxy: 'http://x:aoc_token123@host.docker.internal:10255',
+        },
+        caCertificate: 'cert',
+        caCertificateContainerPath: '/tmp/ca.pem',
+      },
+      [],
+    );
+    const httpsProxyIdx = args.indexOf('HTTPS_PROXY=http://x:aoc_token123@host.docker.internal:10255');
+    expect(httpsProxyIdx).toBe(-1);
+    expect(args).toContain(`HTTPS_PROXY=http://x:aoc_token123@${CONTAINER_HOST_GATEWAY}:10260`);
+    expect(args).toContain(`https_proxy=http://x:aoc_token123@${CONTAINER_HOST_GATEWAY}:10260`);
+  });
+
+  it('leaves non-proxy env and proxy URLs without userinfo alone', () => {
+    const args: string[] = [];
+    applyOneCLIContainerConfig(
+      args,
+      {
+        env: {
+          SOME_VAR: 'unrelated',
+          HTTP_PROXY: 'http://host.docker.internal:10255',
+        },
+        caCertificate: 'cert',
+        caCertificateContainerPath: '/tmp/ca.pem',
+      },
+      [],
+    );
+    expect(args).toContain('SOME_VAR=unrelated');
+    expect(args).toContain(`HTTP_PROXY=http://${CONTAINER_HOST_GATEWAY}:10260`);
   });
 });
 

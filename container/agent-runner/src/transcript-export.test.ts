@@ -52,7 +52,7 @@ describe('exportTurnToInbox', () => {
     const files = fs.readdirSync(inboxDir);
     expect(files.length).toBe(2);
 
-    const userFile = files.find((f) => f.endsWith('-david.md'))!;
+    const userFile = files.find((f) => f.includes('-david-'))!;
     const content = fs.readFileSync(path.join(inboxDir, userFile), 'utf8');
     expect(content).toContain('hello');
     expect(content).toContain('speaker: david');

@@ -97,7 +97,7 @@ async function onecliGetContainerConfig(agent: string): Promise<OneCLIContainerC
 
 const HOST_SERVICES_PROXY_PORT = 10260;
 
-function applyOneCLIContainerConfig(
+export function applyOneCLIContainerConfig(
   args: string[],
   config: OneCLIContainerConfig,
   extraFileMounts: VolumeMount[],
@@ -110,9 +110,11 @@ function applyOneCLIContainerConfig(
       // Rewrite both the port and host: containers reach the host-services-proxy
       // at CONTAINER_HOST_GATEWAY (bridge gateway for Apple Container, host.docker.internal
       // equivalent) rather than 127.0.0.1, which isn't reachable from VMs.
+      // URL may carry basic-auth userinfo (http://x:token@host:port) — only
+      // swap the host:port after the last '@', preserving credentials.
       const rewritten = value.replace(
-        /https?:\/\/[^:]+:\d+/,
-        `http://${CONTAINER_HOST_GATEWAY}:${HOST_SERVICES_PROXY_PORT}`,
+        /^(https?:\/\/(?:[^@]*@)?)[^@]+:\d+/,
+        `$1${CONTAINER_HOST_GATEWAY}:${HOST_SERVICES_PROXY_PORT}`,
       );
       args.push('-e', `${key}=${rewritten}`);
     } else {
@@ -191,6 +193,11 @@ export function isContainerRunning(sessionId: string): boolean {
 /** Container names this process currently tracks as live — used to protect them from a periodic orphan sweep. */
 export function getTrackedContainerNames(): Set<string> {
   return new Set([...activeContainers.values()].map((c) => c.containerName));
+}
+
+/** The running container name for a session, or undefined if it isn't currently up. */
+export function getContainerName(sessionId: string): string | undefined {
+  return activeContainers.get(sessionId)?.containerName;
 }
 
 /**

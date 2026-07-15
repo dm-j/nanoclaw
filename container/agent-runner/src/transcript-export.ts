@@ -156,6 +156,26 @@ function tsDisplay(ts: string): string {
   return new Date(ts).toISOString().replace(/\.\d+Z$/, 'Z');
 }
 
+// Local time + UTC offset, e.g. "2026-07-14T06:46:15-05:00" — human-facing
+// session-log header. Inbox frontmatter timestamps stay UTC for machine use.
+function tsLocal(ts: string): string {
+  const d = new Date(ts);
+  const tz = process.env.USER_TIMEZONE || 'America/Chicago';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    timeZoneName: 'shortOffset',
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  let offset = get('timeZoneName').replace('GMT', '') || '+00:00';
+  if (!offset.includes(':')) {
+    const sign = offset.startsWith('-') ? '-' : '+';
+    offset = `${sign}${offset.replace(/[+-]/, '').padStart(2, '0')}:00`;
+  }
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}${offset}`;
+}
+
 /**
  * Export every new turn (since the last call) to inbox/ + sessions/.
  * Best-effort: logs failures, never throws -- called from onExchangeComplete
@@ -206,12 +226,16 @@ export function exportTurnToInbox(sessionId: string | undefined, agentName = 'Ag
     const tsd = tsDisplay(msg.timestamp);
     const tss = tsSlug(msg.timestamp);
 
-    const inboxFile = path.join(inboxDir, `${tss}-${slg}.md`);
+    // uuid suffix (not just timestamp+role) guarantees one file per message —
+    // same-second turns (common; test fixtures even more so) would otherwise
+    // collide on filename and silently overwrite each other.
+    const uuidShort = msg.uuid.slice(0, 8) || 'noid';
+    const inboxFile = path.join(inboxDir, `${tss}-${slg}-${uuidShort}.md`);
     fs.writeFileSync(
       inboxFile,
       `---\ntimestamp: ${tsd}\nspeaker: ${slg}\ndisplay_name: ${spk}\nsession_id: ${msg.sessionId}\nuuid: ${msg.uuid}\n---\n\n${msg.text}\n`,
     );
-    logEntries.push(`## ${tsd} · ${spk}\n${msg.text}`);
+    logEntries.push(`## ${spk} — ${tsLocal(msg.timestamp)}\n${msg.text}`);
   }
 
   try {
