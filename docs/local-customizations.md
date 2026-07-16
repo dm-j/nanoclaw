@@ -23,3 +23,7 @@ This install has diverged from upstream by 75+ commits of local features (see `/
 - **Agent-to-agent reply timing** — replies append elapsed processing time.
 
 These live entirely in their own `SKILL.md` / commit and don't warrant a standalone doc — check `git log --oneline <base>..HEAD` for the commit if you need the full story.
+
+## Declined upstream features
+
+- **Provider-agnostic memory scaffold (2026-07-16)** — upstream's generic OKF memory feature was left out of a merge because Lumen's own memory system (`working-memory.md` + `.lumen-core.md` + `.memsearch` semantic recall) already does more. See [memory-decision-upstream-declined.md](memory-decision-upstream-declined.md) for the full reasoning and the bar for revisiting it.
