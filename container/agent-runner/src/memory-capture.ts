@@ -155,12 +155,18 @@ export function captureMemoryTurn(sessionId: string | undefined, assistantName =
   const turn = parseTranscriptForMemory(content);
   if (!turn) return;
 
-  const date = new Date().toISOString().split('T')[0];
-  const time = new Date().toLocaleTimeString('en-US', {
+  // Both must use the same local timezone -- `date` decides which day's file
+  // this entry is bucketed into, so it has to agree with `time`'s clock, not
+  // UTC's. A UTC `date` bucketed late-evening local entries into tomorrow's
+  // file (e.g. 23:48 America/Chicago = 04:48 UTC the next day).
+  const now = new Date();
+  const tz = process.env.TZ || 'UTC';
+  const date = now.toLocaleDateString('en-CA', { timeZone: tz }); // en-CA -> YYYY-MM-DD
+  const time = now.toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
-    timeZone: process.env.TZ || 'UTC',
+    timeZone: tz,
   });
 
   try {

@@ -135,7 +135,10 @@ export const remember: McpToolDefinition = {
     const confidence = (args.confidence as string) || 'high';
     if (!CONFIDENCE_VALUES.includes(confidence)) return err(`confidence must be one of: ${CONFIDENCE_VALUES.join(', ')}`);
 
-    const today = new Date().toISOString().slice(0, 10);
+    // Local date, not UTC -- a note remembered late in the evening (e.g.
+    // 23:48 America/Chicago = 04:48 UTC the next day) must not be dated
+    // tomorrow. Same bug class as memory-capture.ts's day-bucketing fix.
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: process.env.TZ || 'UTC' });
     const validFrom = (args.validFrom as string) || today;
     const source = (args.source as string) || 'stated';
     const duration = (args.duration as string) || 'until superseded';
