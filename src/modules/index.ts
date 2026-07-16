@@ -24,3 +24,4 @@ import './self-mod/index.js';
 import './memory-briefing/index.js';
 import './db-backup/index.js';
 import './host-shim/index.js';
+import './canary/index.js';
