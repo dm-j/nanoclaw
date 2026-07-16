@@ -51,6 +51,13 @@ function runInboxTriage(): Promise<void> {
       '--output-format',
       'json',
       '--no-session-persistence',
+      // Headless, unattended, no one to approve prompts — without this every
+      // Bash/write tool call the skill needs to actually file notes gets
+      // silently denied. The run "succeeds" (exit 0, a nicely formatted
+      // plan) but never touches the filesystem; 00-Inbox/ just accumulates.
+      // Runs scoped to the vault dir as cwd (see spawn() below).
+      '--permission-mode',
+      'bypassPermissions',
       ...(BRIEFER_MODEL ? ['--model', BRIEFER_MODEL] : []),
       '/inbox-triage',
     ];
