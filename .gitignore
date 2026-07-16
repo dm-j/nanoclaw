@@ -52,3 +52,7 @@ docs/maintainer-guide.md
 docs/drafts/
 forks.md
 .memsearch/
+
+# Runtime lock state (sessionId/pid/timestamp), rewritten on every process
+# start — not meaningful project history.
+.claude/scheduled_tasks.lock
