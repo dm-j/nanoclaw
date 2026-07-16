@@ -25,3 +25,4 @@ import './memory-briefing/index.js';
 import './db-backup/index.js';
 import './host-shim/index.js';
 import './canary/index.js';
+import './timeout-retry/index.js';

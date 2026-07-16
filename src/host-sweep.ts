@@ -44,6 +44,7 @@ import {
   type ContainerState,
 } from './db/session-db.js';
 import { log } from './log.js';
+import { sendTimeoutRetryCard } from './modules/timeout-retry/index.js';
 import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
 import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
 import type { Session } from './types.js';
@@ -351,6 +352,9 @@ function resetStuckProcessingRows(
         sessionId: session.id,
         reason,
       });
+      sendTimeoutRetryCard(session.id, msg.id).catch((err) =>
+        log.error('Failed to send timeout retry card', { messageId: msg.id, sessionId: session.id, err }),
+      );
     } else {
       const backoffMs = BACKOFF_BASE_MS * Math.pow(2, msg.tries);
       const backoffSec = Math.floor(backoffMs / 1000);

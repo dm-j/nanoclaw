@@ -155,6 +155,13 @@ export function retryWithBackoff(db: Database.Database, messageId: string, backo
   db.prepare('UPDATE messages_in SET tries = tries + 1, process_after = ? WHERE id = ?').run(processAfter, messageId);
 }
 
+/** Bring a 'failed' row back to 'pending' with a fresh retry budget. Used by the timeout-retry "Try again" button. */
+export function requeueFailedMessage(db: Database.Database, messageId: string): void {
+  db.prepare(
+    "UPDATE messages_in SET status = 'pending', tries = 0, process_after = NULL WHERE id = ? AND status = 'failed'",
+  ).run(messageId);
+}
+
 export function getMessageForRetry(
   db: Database.Database,
   messageId: string,
