@@ -136,9 +136,17 @@ COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # ---- Workspace + permissions -------------------------------------------------
+# /app world-writable too: container-runner.ts spawns with --user <hostUid>
+# (an arbitrary host uid, not necessarily node/1000), so the runtime process
+# can't rely on a static chown here. The stage-mount step it runs at startup
+# copies the shared base CLAUDE.md to /app/CLAUDE.md on every spawn (so live
+# edits to container/CLAUDE.md propagate without an image rebuild) — that
+# copy needs write access to /app itself, matching the same class of problem
+# /home/node already solves below.
 RUN mkdir -p /workspace/group /workspace/extra && \
     chown -R node:node /workspace && \
-    chmod 777 /home/node
+    chmod 777 /home/node && \
+    chmod 777 /app
 
 WORKDIR /workspace/group
 

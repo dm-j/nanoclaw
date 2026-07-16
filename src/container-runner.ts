@@ -713,11 +713,19 @@ async function buildContainerArgs(
   const imageTag = containerConfig.imageTag || CONTAINER_IMAGE;
   args.push(imageTag);
 
-  // This bypasses /app/entrypoint.sh entirely (see comment above), which
-  // means its PATH-wrapper generation for container/agent-runner/src/tools/
-  // never runs either — inlined here instead of restoring the full
-  // entrypoint.sh, since that script's mount-staging block is a separate,
-  // unverified code path we don't want to risk exercising on every spawn.
+  // This bypasses /app/entrypoint.sh entirely, which means its PATH-wrapper
+  // generation for container/agent-runner/src/tools/ never runs either —
+  // inlined here. It also means entrypoint.sh's own stage-mount step never
+  // runs — but that step used `mount --bind` gated on `id -u = 0`, which
+  // never applied anyway once buildContainerArgs sets `--user <hostUid>`
+  // above (non-root from the first instruction). Without SOME staging step,
+  // applyOneCLIContainerConfig's staged files (notably the combined CA
+  // bundle at SSL_CERT_FILE/DENO_CERT) never land at their target path,
+  // silently breaking all outbound TLS through the OneCLI-proxied path
+  // (agent's own model calls still work — they bypass the proxy via
+  // NO_PROXY — so this only surfaces on tool calls that reach the web).
+  // A plain copy needs no privilege `mount --bind` would have required, so
+  // it works under the non-root user unconditionally.
   const TOOL_WRAPPER_SETUP = `
 mkdir -p /home/node/.local/bin
 for f in /app/src/tools/*.ts; do
@@ -729,7 +737,27 @@ done
 for f in /app/src/tools/*; do
   [ -f "$f" ] && [ -x "$f" ] && [ "\${f##*.}" != "ts" ] && [ "\${f##*.}" != "md" ] || continue
   cp "$f" "/home/node/.local/bin/$(basename "$f")"
-done`;
+done
+if [ -n "$NANOCLAW_STAGE_MOUNTS" ]; then
+  bun -e '
+    const fs = require("fs");
+    const path = require("path");
+    // Some targets (e.g. /app/CLAUDE.md) sit in a root-owned directory baked
+    // into the image; this process runs as the host uid, not root, so those
+    // copies fail with EACCES. Continue past them rather than aborting the
+    // whole batch — a failure on one target (unwritable /app path) must not
+    // block the rest (notably the OneCLI CA bundle under /tmp, which IS
+    // writable and is load-bearing for all outbound TLS through the proxy).
+    for (const m of JSON.parse(process.env.NANOCLAW_STAGE_MOUNTS)) {
+      try {
+        fs.mkdirSync(path.dirname(m.target), { recursive: true });
+        fs.copyFileSync(m.source, m.target);
+      } catch (err) {
+        console.error("[stage-mount] failed to copy " + m.source + " -> " + m.target + ": " + err.message);
+      }
+    }
+  '
+fi`;
 
   args.push('-c', `${TOOL_WRAPPER_SETUP}\nexec bun run /app/src/index.ts`);
 
