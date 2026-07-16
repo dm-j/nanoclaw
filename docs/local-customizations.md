@@ -12,6 +12,7 @@ This install has diverged from upstream by 75+ commits of local features (see `/
 | RTK token-compression proxy | Routes agent Bash tool calls (git, pytest, docker, etc.) through `rtk` for 60-90% token savings, wired into every agent group. | [.claude/skills/add-rtk/SKILL.md](../.claude/skills/add-rtk/SKILL.md) |
 | Agent tools + per-group timezone | A drop-in CLI tools directory for agents (`tools` command), plus a `.timezone` override and `setlocaltimezone`/`datetime` tools. | [container/agent-runner/src/tools/README.md](../container/agent-runner/src/tools/README.md) |
 | Gotcha registry + orientation docs | Self-maintaining "things that burned you" registry, auto-extracted from transcripts on compaction. | [.claude/orientation/index.md](../.claude/orientation/index.md) |
+| Generic inbound webhook (Lumen) | `POST` plain text to an unguessable URL + bearer secret, delivered as a chat message to Lumen — server-injects an "external source, be skeptical" warning and logs every attempt for review. | [webhook-lumen.md](webhook-lumen.md) |
 
 ## Smaller additions (no dedicated doc)
 

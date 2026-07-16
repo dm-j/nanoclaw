@@ -22,6 +22,7 @@ import { startFeeds, stopFeeds } from './mailman/feeds.js';
 import { startInboxWatcher, stopInboxWatcher } from './mailman/inbox-watcher.js';
 import { startVaultInboxWatcher, stopVaultInboxWatcher } from './memory-briefing/vault-inbox-watcher.js';
 import { registerMailmanWebhook } from './mailman/webhook.js';
+import { registerLumenWebhook } from './webhook-lumen.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
 import { enforceUpgradeTripwire } from './upgrade-state.js';
@@ -196,6 +197,7 @@ async function main(): Promise<void> {
   startInboxWatcher();
   startFeeds();
   registerMailmanWebhook();
+  registerLumenWebhook();
   startVaultInboxWatcher();
 
   // Dashboard (optional; no-ops without DASHBOARD_SECRET)

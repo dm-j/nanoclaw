@@ -298,6 +298,7 @@ This project uses pnpm with `minimumReleaseAge: 4320` (3 days) in `pnpm-workspac
 | [docs/migration-dev.md](docs/migration-dev.md) | Migration development guide — testing, debugging, dev loop |
 | [docs/provider-migration.md](docs/provider-migration.md) | Switching a live agent group between providers (e.g. Claude → Codex) — what carries over, rollback |
 | [docs/host-shims.md](docs/host-shims.md) | Host shim relay — let a container agent invoke a whitelisted host-only executable by name (`src/modules/host-shim/`, `container/agent-runner/src/tools/host-shim.ts`) |
+| [docs/webhook-lumen.md](docs/webhook-lumen.md) | Generic inbound webhook — `POST` plain text to an unguessable URL + bearer secret, delivered to Lumen as a chat message with a server-injected "external source" skepticism warning (`src/webhook-lumen.ts`) |
 | [docs/inference-router.md](docs/inference-router.md) | Model-prefix routing to Ollama/Anthropic via the sibling PrefixRouter project (port 8787) — `ollama/`, `anthropic/` prefixes |
 | [docs/local-customizations.md](docs/local-customizations.md) | Index of this install's local features/deviations from upstream, each with a one-line summary and a link to its full doc |
 | [docs/customizing.md](docs/customizing.md) | Short intro to customizing via skills |
