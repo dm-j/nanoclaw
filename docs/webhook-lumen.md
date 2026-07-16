@@ -16,10 +16,11 @@ Content-Type: text/plain
 
 - Port is `WEBHOOK_PORT` (default `3000`, same server as every other webhook consumer) — see `src/webhook-server.ts`.
 - The path segment and the bearer secret both live in `.env`: `WEBHOOK_LUMEN_PATH`, `WEBHOOK_SHARED_SECRET`, `WEBHOOK_LUMEN_AGENT_GROUP_ID` (Lumen's agent group id — `ag-1781738004490-2axf9a` on this install).
+- **`WEBHOOK_LUMEN_ENABLED=true` is required to actually deliver content — default is off.** The route still registers and validates auth as long as path/secret/agent-group are configured, so a fully-set-up-but-forgotten-to-enable webhook doesn't just silently 404: an authenticated request (correct secret) with the switch off gets a `503` and Lumen is told "there was an attempt to use your inbound webhook, but webhooks are deactivated" instead of the actual posted content. This is the deliberate default-closed posture — configuring the endpoint doesn't open a live line into Lumen's session by itself.
 - `<title>` is an optional path segment after the secret path — names *which* webhook fired (e.g. `.../tundra-harbor-antelope/acknowledge`), rendered as a `# heading` above the body so Lumen can tell distinct triggers apart.
 - Query params ride along as YAML frontmatter key/value pairs.
 - The whole thing is delivered to Lumen as a fenced markdown block: frontmatter, then the title heading (if given), then the raw body.
-- Response: `200 {"delivered":true}` on success. `401` on missing/bad auth, `405` on non-POST, `400` on empty body, `413` over the size cap.
+- Response: `200 {"delivered":true}` on success. `401` on missing/bad auth, `405` on non-POST, `400` on empty body, `413` over the size cap, `503` if authenticated but `WEBHOOK_LUMEN_ENABLED` isn't `true`.
 
 ## Security model
 

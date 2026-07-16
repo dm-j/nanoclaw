@@ -17,11 +17,23 @@ import { resolveSession, writeSessionMessage } from './session-manager.js';
 import { getSession } from './db/sessions.js';
 import { wakeContainer } from './container-runner.js';
 
-const env = readEnvFile(['WEBHOOK_LUMEN_PATH', 'WEBHOOK_LUMEN_AGENT_GROUP_ID', 'WEBHOOK_SHARED_SECRET']);
+const env = readEnvFile([
+  'WEBHOOK_LUMEN_PATH',
+  'WEBHOOK_LUMEN_AGENT_GROUP_ID',
+  'WEBHOOK_SHARED_SECRET',
+  'WEBHOOK_LUMEN_ENABLED',
+]);
 
 const WEBHOOK_PATH = process.env.WEBHOOK_LUMEN_PATH || env.WEBHOOK_LUMEN_PATH;
 const AGENT_GROUP_ID = process.env.WEBHOOK_LUMEN_AGENT_GROUP_ID || env.WEBHOOK_LUMEN_AGENT_GROUP_ID;
 const SHARED_SECRET = process.env.WEBHOOK_SHARED_SECRET || env.WEBHOOK_SHARED_SECRET;
+// Separate from the path/secret/agent-group config above: those wire the
+// route up so an authenticated attempt can be caught and reported, but
+// WEBHOOK_LUMEN_ENABLED is the actual on/off switch for delivering content.
+// Default is off — a fully configured-but-forgotten-to-flip-on webhook stays
+// a live line into Lumen's session with no signal that it's active. With the
+// switch off, an authenticated request instead tells Lumen someone tried.
+const ENABLED = (process.env.WEBHOOK_LUMEN_ENABLED || env.WEBHOOK_LUMEN_ENABLED) === 'true';
 
 const MAX_BODY_BYTES = 20_000;
 
@@ -115,6 +127,42 @@ export function registerLumenWebhook(): void {
       log.warn('Lumen webhook: rejected — empty body', { ip: remoteIp });
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Empty body' }));
+      return;
+    }
+
+    if (!ENABLED) {
+      // Authenticated (correct secret) but the switch is off. Deliberately
+      // don't relay the posted content in this state — the point of the
+      // switch is that it stays off by default and nothing gets through
+      // while it is. Still tell Lumen an attempt happened, so a forgotten
+      // "turn the webhook on" step surfaces instead of silently swallowing
+      // real traffic.
+      try {
+        const { session } = resolveSession(AGENT_GROUP_ID, null, null, 'agent-shared');
+        writeSessionMessage(AGENT_GROUP_ID, session.id, {
+          id: `webhook-disabled-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          kind: 'chat',
+          timestamp: new Date().toISOString(),
+          platformId: AGENT_GROUP_ID,
+          channelType: 'agent',
+          threadId: null,
+          content: JSON.stringify({
+            text: 'There was an attempt to use your inbound webhook, but webhooks are deactivated. Check with your user if this is an error.',
+            sender: 'webhook',
+            senderId: 'webhook',
+          }),
+        });
+        const fresh = getSession(session.id);
+        if (fresh) {
+          wakeContainer(fresh).catch((err) => log.error('Lumen webhook: failed to wake container', { err }));
+        }
+      } catch (err) {
+        log.error('Lumen webhook: failed to notify Lumen of disabled attempt', { ip: remoteIp, err });
+      }
+
+      log.warn('Lumen webhook: authenticated attempt while disabled', { ip: remoteIp });
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Webhook disabled' }));
       return;
     }
 
