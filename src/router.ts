@@ -32,6 +32,7 @@ import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js
 import { log } from './log.js';
 import { resolveSession, writeSessionMessage, writeOutboundDirect } from './session-manager.js';
 import { wakeContainer } from './container-runner.js';
+import { maybeKickoffBriefing } from './modules/synthetic-context/briefing-cache.js';
 import { getSession } from './db/sessions.js';
 import type { AgentGroup, MessagingGroup, MessagingGroupAgent } from './types.js';
 import type { InboundEvent } from './channels/adapter.js';
@@ -514,6 +515,14 @@ async function deliverToAgent(
     content: event.message.content,
     trigger: wake ? 1 : 0,
   });
+
+  // Fire-and-forget: async, one-turn-behind briefing kickoff for synthetic-
+  // context-enabled groups only (see docs/synthetic-context.md). No-ops
+  // immediately for every other group; never awaited, never blocks routing.
+  if (event.message.kind === 'chat' || event.message.kind === 'chat-sdk') {
+    const parsed = safeParseContent(event.message.content);
+    if (parsed.text) maybeKickoffBriefing(session.agent_group_id, parsed.text);
+  }
 
   log.info('Message routed', {
     sessionId: session.id,

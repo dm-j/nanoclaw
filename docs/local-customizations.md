@@ -13,6 +13,7 @@ This install has diverged from upstream by 75+ commits of local features (see `/
 | Agent tools + per-group timezone | A drop-in CLI tools directory for agents (`tools` command), plus a `.timezone` override and `setlocaltimezone`/`datetime` tools. | [container/agent-runner/src/tools/README.md](../container/agent-runner/src/tools/README.md) |
 | Gotcha registry + orientation docs | Self-maintaining "things that burned you" registry, auto-extracted from transcripts on compaction. | [.claude/orientation/index.md](../.claude/orientation/index.md) |
 | Generic inbound webhook (Lumen) | `POST` plain text to an unguessable URL + bearer secret, delivered as a chat message to Lumen — server-injects an "external source, be skeptical" warning and logs every attempt for review. | [webhook-lumen.md](webhook-lumen.md) |
+| Synthetic context (truncated-transcript A/B) | Opt-in toggle to resume a truncated last-N-turns copy of a session's transcript each turn instead of the full history, with the real transcript still growing untouched in the background. First step toward replacing generic SDK compaction with deliberate, curated context. | [synthetic-context.md](synthetic-context.md) |
 
 ## Smaller additions (no dedicated doc)
 

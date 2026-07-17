@@ -173,6 +173,23 @@ export function applyOneCLIContainerConfig(
 const activeContainers = new Map<string, { process: ChildProcess; containerName: string; serviceToken: string }>();
 
 /**
+ * Heightened container-log capture, gated by HEIGHTENED_LOG_UNTIL (a plain
+ * YYYY-MM-DD date, compared as calendar days in the *group's* timezone —
+ * resolveGroupTimezone's `.timezone` override, not the host OS clock, since
+ * the two can diverge (e.g. the user has Lumen change her tracked timezone
+ * without touching the host's). Not parsed as a UTC instant either, which
+ * would flip off at a random hour depending on the offset. Off if the env
+ * var is missing, malformed, or today is on or after it — so this
+ * self-disarms without a follow-up deploy.
+ */
+function heightenedLoggingActive(groupFolder: string): boolean {
+  const raw = process.env.HEIGHTENED_LOG_UNTIL;
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return false;
+  const todayLocal = new Date().toLocaleDateString('en-CA', { timeZone: resolveGroupTimezone(groupFolder) });
+  return todayLocal < raw;
+}
+
+/**
  * In-flight wake promises, keyed by session id. Deduplicates concurrent
  * `wakeContainer` calls while the first spawn is still mid-setup (async
  * buildContainerArgs, OneCLI gateway apply, etc.) — otherwise a second
@@ -317,21 +334,39 @@ async function spawnContainer(session: Session): Promise<void> {
   activeContainers.set(session.id, { process: container, containerName, serviceToken });
   markContainerRunning(session.id);
 
+  // ponytail: heightened logging is an investigation aid for the sdk-hang
+  // recurrence, not a permanent feature — checked once per spawn, so a
+  // changed/expired HEIGHTENED_LOG_UNTIL only takes effect on the next
+  // container spawn. Delete this block once the investigation is done.
+  const heightened = heightenedLoggingActive(agentGroup.folder);
+
   // Log stderr. A container that dies at boot (unknown provider, missing
   // binary, bad config) explains itself only here — and debug is below the
   // default log level — so keep a tail to surface on a non-zero exit.
+  // Heightened logging promotes every line to info (persisted regardless of
+  // exit code) since a hung-but-not-crashed container never hits the
+  // non-zero-exit tail path at all.
   const stderrTail: string[] = [];
   container.stderr?.on('data', (data) => {
     for (const line of data.toString().trim().split('\n')) {
       if (!line) continue;
-      log.debug(line, { container: agentGroup.folder });
+      if (heightened) log.info(line, { container: agentGroup.folder, stream: 'stderr' });
+      else log.debug(line, { container: agentGroup.folder });
       stderrTail.push(line);
       if (stderrTail.length > 10) stderrTail.shift();
     }
   });
 
-  // stdout is unused in v2 (all IO is via session DB)
-  container.stdout?.on('data', () => {});
+  // stdout is unused in v2 (all IO is via session DB) — except under
+  // heightened logging, where we want the successful-turn output too, since
+  // the whole point is capturing turns that never signal failure.
+  container.stdout?.on('data', (data) => {
+    if (!heightened) return;
+    for (const line of data.toString().trim().split('\n')) {
+      if (!line) continue;
+      log.info(line, { container: agentGroup.folder, stream: 'stdout' });
+    }
+  });
 
   // No host-side idle timeout. Stale/stuck detection is driven by the host
   // sweep reading heartbeat mtime + processing_ack claim age + container_state

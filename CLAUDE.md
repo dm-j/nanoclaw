@@ -21,6 +21,8 @@ Personal AI assistant. See [README.md](README.md) for philosophy and setup. Arch
 
 All Claude Code instances run on **macOS**. All code, scripts, and CLI tools must be macOS-compatible. Do not use Linux-only flags (e.g. `readlink -f`, `sed -i` without `''`, GNU coreutils extensions) or assume Linux paths.
 
+**This install runs containers via Apple's `container` CLI, not Docker.** Use `container ls` to check running containers/state — `docker ps` will silently report nothing even when a container is genuinely live, which reads as a false "all clear" for anyone checking before a risky operation. See [.claude/orientation/runtime.md](.claude/orientation/runtime.md) for the full rationale (Apple Container's file-mount model, host gateway differences, etc).
+
 ## Quick Context
 
 The host is a single Node process that orchestrates per-session agent containers. Platform messages land via channel adapters, route through an entity model (users → messaging groups → agent groups → sessions), get written into the session's inbound DB, and wake a container. The agent-runner inside the container polls the DB, calls the agent, and writes back to the outbound DB. The host polls the outbound DB and delivers through the same adapter.
@@ -299,6 +301,7 @@ This project uses pnpm with `minimumReleaseAge: 4320` (3 days) in `pnpm-workspac
 | [docs/provider-migration.md](docs/provider-migration.md) | Switching a live agent group between providers (e.g. Claude → Codex) — what carries over, rollback |
 | [docs/host-shims.md](docs/host-shims.md) | Host shim relay — let a container agent invoke a whitelisted host-only executable by name (`src/modules/host-shim/`, `container/agent-runner/src/tools/host-shim.ts`) |
 | [docs/webhook-lumen.md](docs/webhook-lumen.md) | Generic inbound webhook — `POST` plain text to an unguessable URL + bearer secret, delivered to Lumen as a chat message with a server-injected "external source" skepticism warning (`src/webhook-lumen.ts`) |
+| [docs/synthetic-context.md](docs/synthetic-context.md) | Opt-in A/B toggle (`NANOCLAW_SYNTHETIC_CONTEXT`) that resumes a truncated last-N-turns copy of a session's transcript each turn instead of the full history, while the real transcript keeps growing untouched in the background (`container/agent-runner/src/providers/claude.ts`) |
 | [docs/inference-router.md](docs/inference-router.md) | Model-prefix routing to Ollama/Anthropic via the sibling PrefixRouter project (port 8787) — `ollama/`, `anthropic/` prefixes |
 | [docs/local-customizations.md](docs/local-customizations.md) | Index of this install's local features/deviations from upstream, each with a one-line summary and a link to its full doc |
 | [docs/customizing.md](docs/customizing.md) | Short intro to customizing via skills |
