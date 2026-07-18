@@ -505,6 +505,17 @@ async function deliverToAgent(
     }
   }
 
+  // Briefing kickoff for synthetic-context-enabled groups only (see
+  // docs/synthetic-context.md). No-ops immediately for every other group.
+  // Async by default (fire-and-forget, doesn't block the wake write below);
+  // NANOCLAW_SYNTHETIC_CONTEXT_SYNC flips the returned promise to resolve
+  // only once the fresh briefing is written, so this await must happen
+  // BEFORE writeSessionMessage (that's what actually wakes the container).
+  if (event.message.kind === 'chat' || event.message.kind === 'chat-sdk') {
+    const parsed = safeParseContent(event.message.content);
+    if (parsed.text) await maybeKickoffBriefing(session.agent_group_id, parsed.text);
+  }
+
   writeSessionMessage(session.agent_group_id, session.id, {
     id: messageIdForAgent(event.message.id, agent.agent_group_id),
     kind: event.message.kind,
@@ -515,14 +526,6 @@ async function deliverToAgent(
     content: event.message.content,
     trigger: wake ? 1 : 0,
   });
-
-  // Fire-and-forget: async, one-turn-behind briefing kickoff for synthetic-
-  // context-enabled groups only (see docs/synthetic-context.md). No-ops
-  // immediately for every other group; never awaited, never blocks routing.
-  if (event.message.kind === 'chat' || event.message.kind === 'chat-sdk') {
-    const parsed = safeParseContent(event.message.content);
-    if (parsed.text) maybeKickoffBriefing(session.agent_group_id, parsed.text);
-  }
 
   log.info('Message routed', {
     sessionId: session.id,

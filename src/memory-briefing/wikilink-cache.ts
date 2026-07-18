@@ -17,7 +17,10 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+import { BRIEFING_LOG_DIR, TIMEZONE } from '../config.js';
 import { log } from '../log.js';
+import { getEffectiveEndorsement } from '../modules/synthetic-context/wikilink-endorsements.js';
+import { formatLocalStamp } from '../timezone.js';
 import {
   buildBrieferPrompt,
   runBriefer,
@@ -79,21 +82,66 @@ export function extractWikilinks(markdown: string): string[] {
 interface CacheHit {
   query: string;
   links: string[];
+  hotness: Record<string, number>; // normalized target -> effective endorsement at hit time
 }
 
-/** Best-effort — a cache-lookup failure should never block a real Briefer call, just skip the hint. */
+/**
+ * Strips a `[[...]]`/alias/heading/`.md` wikilink down to the same lowercase
+ * key `load_obsidian_wikilink` endorses under (see
+ * container/agent-runner/src/mcp-tools/obsidian.ts `endorseWikilink`), so a
+ * link scraped from a past briefing can be looked up against the store.
+ */
+function normalizeWikilinkTarget(raw: string): string {
+  let target = raw.trim();
+  if (target.startsWith('[[') && target.endsWith(']]')) target = target.slice(2, -2);
+  const pipeIdx = target.indexOf('|');
+  if (pipeIdx !== -1) target = target.slice(0, pipeIdx);
+  target = target.trim();
+  const hashIdx = target.indexOf('#');
+  if (hashIdx !== -1) target = target.slice(0, hashIdx).trim();
+  if (target.toLowerCase().endsWith('.md')) target = target.slice(0, -3);
+  return target.toLowerCase();
+}
+
+// Endorsement (0-5, decaying) contributes up to this many similarity-score
+// points — enough to visibly reorder near-tied results, not enough to bury
+// a highly-relevant unendorsed link under a stale, frequently-followed one.
+const ENDORSEMENT_WEIGHT = 0.1;
+
+/**
+ * Best-effort — a cache-lookup failure should never block a real Briefer
+ * call, just skip the hint. Pools links across the top-k similar past
+ * queries (not just the single best match) and ranks them by similarity
+ * score plus endorsement weight, so a note Lumen keeps following via
+ * `load_obsidian_wikilink` surfaces more prominently even from a slightly
+ * less similar past query.
+ */
 async function lookupCache(vaultPath: string, query: string): Promise<CacheHit | null> {
   const dir = cacheDir(vaultPath);
   if (!fs.existsSync(dir)) return null;
   try {
     const out = await runMemsearch(['search', query, '-k', '3', '--source-prefix', CACHE_SUBDIR, '-j']);
-    const parsed = JSON.parse(out) as Array<{ path?: string; text?: string; content?: string }>;
+    const parsed = JSON.parse(out) as Array<{ path?: string; text?: string; content?: string; score?: number }>;
     if (!Array.isArray(parsed) || parsed.length === 0) return null;
-    const top = parsed[0];
-    const text = top.text || top.content || '';
-    const links = extractWikilinks(text);
-    if (links.length === 0) return null;
-    return { query, links };
+
+    const ranked = new Map<string, { link: string; score: number; hotness: number }>();
+    for (const note of parsed) {
+      const text = note.text || note.content || '';
+      const similarity = note.score ?? 0;
+      for (const link of extractWikilinks(text)) {
+        const key = normalizeWikilinkTarget(link);
+        const hotness = getEffectiveEndorsement(key);
+        const combined = similarity + ENDORSEMENT_WEIGHT * hotness;
+        const existing = ranked.get(key);
+        if (!existing || combined > existing.score) ranked.set(key, { link, score: combined, hotness });
+      }
+    }
+    if (ranked.size === 0) return null;
+
+    const sorted = [...ranked.values()].sort((a, b) => b.score - a.score);
+    const links = sorted.map((r) => r.link);
+    const hotness = Object.fromEntries(sorted.map((r) => [r.link, Math.round(r.hotness * 100) / 100]));
+    return { query, links, hotness };
   } catch (err) {
     log.debug('wikilink cache lookup failed, skipping hint', { err });
     return null;
@@ -122,6 +170,52 @@ async function writeCacheEntry(vaultPath: string, query: string, links: string[]
   }
 }
 
+interface TimingInfo {
+  lookupMs: number;
+  briefingMs: number;
+  totalMs: number;
+}
+
+/** One file per active clock hour (local time) — never created for hours with no briefing. */
+function appendBriefingLog(
+  query: string,
+  hit: CacheHit | null,
+  result: BrieferResult,
+  timing: TimingInfo,
+  workingMemory: string | null,
+): void {
+  try {
+    fs.mkdirSync(BRIEFING_LOG_DIR, { recursive: true });
+    const stamp = formatLocalStamp(new Date(), TIMEZONE); // "YYYY-MM-DD HH:mm"
+    const hourFile = path.join(BRIEFING_LOG_DIR, `${stamp.slice(0, 10)}-${stamp.slice(11, 13)}.md`);
+    const hitLine = hit
+      ? `**Wikilink cache hit:** ${hit.links.map((l) => `${l} (hotness ${hit.hotness[l]})`).join(', ')}`
+      : '**Wikilink cache:** miss';
+    const entry = [
+      `## ${stamp}`,
+      '',
+      hitLine,
+      `**Timing:** lookup ${timing.lookupMs}ms, briefing ${timing.briefingMs}ms, total ${timing.totalMs}ms`,
+      '',
+      `**Query:** ${query.slice(0, 300)}`,
+      '',
+      '**working-memory.md:**',
+      '',
+      workingMemory ?? '(none)',
+      '',
+      '**Briefing:**',
+      '',
+      result.briefing,
+      '',
+      '---',
+      '',
+    ].join('\n');
+    fs.appendFileSync(hourFile, entry);
+  } catch (err) {
+    log.warn('briefing log write failed (non-fatal)', { err });
+  }
+}
+
 /**
  * Runs Briefer with the wikilink-cache shortcut: checks the cache first and
  * folds a hit into the prompt as a hint, then scrapes and files whatever
@@ -133,14 +227,27 @@ export async function runBrieferWithWikilinkCache(
   recentTurns: LiteralTurn[],
   newMessage: string,
   overrides?: BrieferOverrides,
+  workingMemoryPath?: string,
 ): Promise<BrieferResult> {
+  const totalStart = Date.now();
+  const lookupStart = Date.now();
   const hit = await lookupCache(vaultPath, newMessage);
+  const lookupMs = Date.now() - lookupStart;
+  if (hit) log.info('wikilink cache hit, folding into prompt', { query: newMessage.slice(0, 80), links: hit.links });
   const prompt = hit
     ? `${buildBrieferPrompt(recentTurns, newMessage)}\n\n## Cached hint (unverified — a similar past query cited these; check, don't assume)\n\n${hit.links.join(', ')}`
     : buildBrieferPrompt(recentTurns, newMessage);
 
+  const briefingStart = Date.now();
   const result = await runBriefer(prompt, overrides);
+  const briefingMs = Date.now() - briefingStart;
+
   const links = extractWikilinks(result.briefing);
   await writeCacheEntry(vaultPath, newMessage, links);
+
+  const workingMemory =
+    workingMemoryPath && fs.existsSync(workingMemoryPath) ? fs.readFileSync(workingMemoryPath, 'utf-8') : null;
+  const totalMs = Date.now() - totalStart;
+  appendBriefingLog(newMessage, hit, result, { lookupMs, briefingMs, totalMs }, workingMemory);
   return result;
 }

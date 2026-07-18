@@ -75,6 +75,21 @@ export type ApprovalHandler = (ctx: ApprovalHandlerContext) => Promise<void>;
 
 const approvalHandlers = new Map<string, ApprovalHandler>();
 
+// ── Silent-reject opt-out ──
+// Default behavior (finalize.ts) always tells the agent its request was
+// rejected. A module can opt an `action` out at import time if a rejection
+// must be invisible to the agent (e.g. mbif-crew: "if denied, agent is not
+// notified, the command never happens").
+const silentRejectActions = new Set<string>();
+
+export function registerSilentReject(action: string): void {
+  silentRejectActions.add(action);
+}
+
+export function isSilentReject(action: string): boolean {
+  return silentRejectActions.has(action);
+}
+
 export function registerApprovalHandler(action: string, handler: ApprovalHandler): void {
   if (approvalHandlers.has(action)) {
     log.warn('Approval handler re-registered (overwriting)', { action });

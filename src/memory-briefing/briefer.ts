@@ -58,6 +58,12 @@ export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: strin
     '## New message from David — prepare a briefing for this',
     '',
     newMessage,
+    '',
+    '## Output constraint',
+    '',
+    'The briefing text is the whole response — do not append a `### Suggested next agent` or',
+    '`### Post-it` section to it. Post-it is your own persistent state, written separately to',
+    '`{{meta}}/states/briefer.md` per your instructions — it does not belong in the briefing output.',
   ].join('\n');
 }
 

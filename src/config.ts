@@ -56,6 +56,16 @@ export const SENDER_ALLOWLIST_PATH = path.join(HOME_DIR, '.config', 'nanoclaw', 
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
+// Synthetic-context briefing + wikilink-cache-hit log, one file per active
+// clock hour. Deliberately outside the vault — MBIF would have to reconcile
+// this as redundant content otherwise. See docs/synthetic-context.md.
+export const BRIEFING_LOG_DIR = path.resolve(PROJECT_ROOT, 'logs', 'briefings');
+// Wikilink endorsement store — how many times, decayed, each note has been
+// followed via `load_obsidian_wikilink`. See docs/synthetic-context.md.
+export const WIKILINK_ENDORSEMENTS_PATH = path.join(DATA_DIR, 'wikilink-endorsements.json');
+// MBIF-crew audit log — every prompt_mbif_crew request, approved or denied,
+// with pre/post commit IDs on approval. See src/modules/mbif-crew/.
+export const MBIF_CREW_LOG_PATH = path.resolve(PROJECT_ROOT, 'logs', 'mbif-crew.md');
 // Local agent-template library. Committed but ships empty (+ README). Resolved
 // once at load. Override to another LOCAL path via NANOCLAW_TEMPLATES_DIR; never
 // a remote URL, never an ncl flag, never runtime-mutable.

@@ -45,21 +45,51 @@ function briefingCachePath(agentGroupId: string): string | null {
   return path.join(GROUPS_DIR, group.folder, '.briefing-cache.md');
 }
 
+function workingMemoryPath(agentGroupId: string): string | undefined {
+  const group = getAgentGroup(agentGroupId);
+  if (!group) return undefined;
+  return path.join(GROUPS_DIR, group.folder, 'working-memory.md');
+}
+
+// A/B lever for comparing the two tradeoffs directly: async (default, one-turn
+// stale, zero added latency) vs sync (fresh every turn, but the caller waits
+// out the full 24-46s Briefer call before the container wakes). Same env var
+// shape as NANOCLAW_SYNTHETIC_CONTEXT itself.
+function syncModeEnabledFor(agentGroupId: string): boolean {
+  const config = getContainerConfig(agentGroupId);
+  if (!config?.env) return false;
+  try {
+    const parsedEnv = JSON.parse(config.env) as Record<string, string>;
+    return parsedEnv.NANOCLAW_SYNTHETIC_CONTEXT_SYNC === '1' || parsedEnv.NANOCLAW_SYNTHETIC_CONTEXT_SYNC === 'true';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Call on every routed message. No-ops immediately (before touching the
  * filesystem or spawning anything) unless the target agent group has
  * NANOCLAW_SYNTHETIC_CONTEXT enabled — zero cost for every other group.
- * Never throws, never awaited by the caller — routing must not wait on this.
+ * Never throws. Async by default (fire-and-forget, caller doesn't await);
+ * if NANOCLAW_SYNTHETIC_CONTEXT_SYNC is set, the returned promise resolves
+ * only once the fresh briefing is written, so an awaiting caller blocks the
+ * container wake on it.
  */
-export function maybeKickoffBriefing(agentGroupId: string, messageText: string): void {
-  if (!messageText.trim()) return;
-  if (!synthContextEnabledFor(agentGroupId)) return;
-  if (!VAULT_PATH) return;
+export function maybeKickoffBriefing(agentGroupId: string, messageText: string): Promise<void> {
+  if (!messageText.trim()) return Promise.resolve();
+  if (!synthContextEnabledFor(agentGroupId)) return Promise.resolve();
+  if (!VAULT_PATH) return Promise.resolve();
 
   const cachePath = briefingCachePath(agentGroupId);
-  if (!cachePath) return;
+  if (!cachePath) return Promise.resolve();
 
-  runBrieferWithWikilinkCache(VAULT_PATH, [], messageText, SYNTHETIC_BRIEFING_OVERRIDES)
+  const promise = runBrieferWithWikilinkCache(
+    VAULT_PATH,
+    [],
+    messageText,
+    SYNTHETIC_BRIEFING_OVERRIDES,
+    workingMemoryPath(agentGroupId),
+  )
     .then((result) => {
       fs.writeFileSync(cachePath, result.briefing);
       log.debug('synthetic-context briefing cache updated', { agentGroupId, costUsd: result.costUsd });
@@ -67,4 +97,6 @@ export function maybeKickoffBriefing(agentGroupId: string, messageText: string):
     .catch((err) => {
       log.warn('synthetic-context briefing kickoff failed (non-fatal, next turn falls back)', { agentGroupId, err });
     });
+
+  return syncModeEnabledFor(agentGroupId) ? promise : Promise.resolve();
 }
