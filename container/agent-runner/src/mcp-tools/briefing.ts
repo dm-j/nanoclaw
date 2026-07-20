@@ -179,4 +179,36 @@ export const remember: McpToolDefinition = {
   },
 };
 
-registerTools([recall, remember]);
+/**
+ * load_transcript / load_briefing exist purely to be reframed as synthetic
+ * tool calls: NanoClaw's per-turn context delivery (see docs/synthetic-context.md)
+ * substitutes their content into a reusable transcript skeleton every turn —
+ * she never actually invokes them for real. Registered as genuine tools
+ * anyway so the substituted tool_use entries name something real, and so
+ * that IF she ever does invoke one for real (curiosity, confusion about
+ * whether this turn already has the data), it's a free, instant no-op
+ * instead of burning tokens/time repeating a retrieval she already has.
+ */
+export const loadTranscript: McpToolDefinition = {
+  tool: {
+    name: 'load_transcript',
+    description: 'Internal — do not call. The current turn already has recent literal transcript loaded via a synthetic tool result.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  async handler() {
+    return ok('This session has already loaded the transcript for this turn.');
+  },
+};
+
+export const loadBriefing: McpToolDefinition = {
+  tool: {
+    name: 'load_briefing',
+    description: 'Internal — do not call. The current turn already has a briefing loaded via a synthetic tool result.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  async handler() {
+    return ok('This session has already loaded the briefing for this turn. For answers to specific questions, use `recall` tool.');
+  },
+};
+
+registerTools([recall, remember, loadTranscript, loadBriefing]);

@@ -15,7 +15,7 @@ import { deletePendingApproval } from '../../db/sessions.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import type { PendingApproval, Session } from '../../types.js';
-import { notifyApprovalResolved } from './primitive.js';
+import { isSilentReject, notifyApprovalResolved } from './primitive.js';
 
 /**
  * Notify the requesting agent that its action was rejected, drop the pending
@@ -32,19 +32,21 @@ export async function finalizeReject(
   userId: string,
   reason?: string,
 ): Promise<void> {
-  const text = reason
-    ? `Your ${approval.action} request was rejected by admin: "${reason}"`
-    : `Your ${approval.action} request was rejected by admin.`;
+  if (!isSilentReject(approval.action)) {
+    const text = reason
+      ? `Your ${approval.action} request was rejected by admin: "${reason}"`
+      : `Your ${approval.action} request was rejected by admin.`;
 
-  writeSessionMessage(session.agent_group_id, session.id, {
-    id: `appr-note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    kind: 'chat',
-    timestamp: new Date().toISOString(),
-    platformId: session.agent_group_id,
-    channelType: 'agent',
-    threadId: null,
-    content: JSON.stringify({ text, sender: 'system', senderId: 'system' }),
-  });
+    writeSessionMessage(session.agent_group_id, session.id, {
+      id: `appr-note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'chat',
+      timestamp: new Date().toISOString(),
+      platformId: session.agent_group_id,
+      channelType: 'agent',
+      threadId: null,
+      content: JSON.stringify({ text, sender: 'system', senderId: 'system' }),
+    });
+  }
 
   log.info('Approval rejected', {
     approvalId: approval.approval_id,
@@ -55,5 +57,5 @@ export async function finalizeReject(
 
   deletePendingApproval(approval.approval_id);
   await notifyApprovalResolved({ approval, session, outcome: 'reject', userId });
-  await wakeContainer(session);
+  if (!isSilentReject(approval.action)) await wakeContainer(session);
 }

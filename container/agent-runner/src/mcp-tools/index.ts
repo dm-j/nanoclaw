@@ -11,6 +11,7 @@ import './agents.js';
 import './self-mod.js';
 import './briefing.js';
 import './obsidian.js';
+import './mbif-crew.js';
 import { startMcpServer } from './server.js';
 
 function log(msg: string): void {

@@ -26,3 +26,5 @@ import './db-backup/index.js';
 import './host-shim/index.js';
 import './canary/index.js';
 import './timeout-retry/index.js';
+import './synthetic-context/wikilink-endorsements.js';
+import './mbif-crew/index.js';

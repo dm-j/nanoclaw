@@ -290,6 +290,178 @@ function transcriptRotateAgeMs(): number {
   return days > 0 ? days * 86_400_000 : Infinity;
 }
 
+// ── Synthetic context (see docs/synthetic-context.md) — A/B toggle, off by
+// default. When enabled, `query()` resumes a small reusable skeleton
+// (synthetic-context-skeleton.jsonl — a real, once-captured transcript: one
+// user message, two tool_use/tool_result pairs, real ids/uuid/parentUuid
+// chain) with content substituted into every slot fresh each turn: the
+// opening user-message slot gets the last real user message, the first tool
+// pair (load_transcript) gets recent literal history, the second
+// (load_briefing) gets the briefing payload. Real content appended past a
+// transcript's own original length gets silently dropped on resume
+// (confirmed 2026-07-17, see vault "Synthetic Context Delivery" project) —
+// substituting content into an already-existing, correctly-shaped skeleton
+// sidesteps that entirely, since nothing is ever appended. New turns produced
+// live still get mirrored back onto the canonical file so it keeps
+// accumulating and auto-compacting exactly as it does today. Flip
+// NANOCLAW_SYNTHETIC_CONTEXT off to revert to today's behavior with zero
+// other changes -- the canonical session is always there, untouched.
+
+function syntheticContextEnabled(): boolean {
+  return process.env.NANOCLAW_SYNTHETIC_CONTEXT === '1' || process.env.NANOCLAW_SYNTHETIC_CONTEXT === 'true';
+}
+
+function syntheticContextTurnWindow(): number {
+  return Number(process.env.NANOCLAW_SYNTHETIC_CONTEXT_LINES) || 40;
+}
+
+/** Mirrors the SDK's own cwd -> project-dir mangling: every `/` becomes `-`. */
+function mangleCwd(cwd: string): string {
+  return cwd.replace(/\//g, '-');
+}
+
+function canonicalMarkerPath(cwd: string): string {
+  return path.join(cwd, '.canonical-session-id');
+}
+
+/** Non-content marker/summary lines that shouldn't be treated as real turns. */
+const TRANSCRIPT_MARKER_TYPES = new Set(['last-prompt', 'summary']);
+
+const SKELETON_TEMPLATE_PATH = path.join(import.meta.dir, 'synthetic-context-skeleton.jsonl');
+
+interface SkeletonResume {
+  ephemeralId: string;
+  ephemeralPath: string;
+  skeletonEntryCount: number;
+}
+
+/**
+ * Loads the reusable 6-entry skeleton fresh each call (cheap — six short
+ * lines) so callers mutating entries in place never share state across
+ * turns. Shape: [0] user message, [1] tool_use load_transcript, [2]
+ * tool_result, [3] tool_use load_briefing, [4] tool_result, [5] assistant
+ * "done" ack. Captured once from a real disposable session 2026-07-17 (see
+ * docs/synthetic-context.md) — real ids/uuid/parentUuid chain throughout,
+ * env-specific attachment/listing noise stripped and the gap re-chained.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function loadSkeletonEntries(): any[] {
+  const raw = fs.readFileSync(SKELETON_TEMPLATE_PATH, 'utf-8');
+  return raw
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function setToolResultText(entry: any, text: string): void {
+  entry.message.content[0].content[0].text = text;
+  entry.toolUseResult[0].text = text;
+}
+
+/**
+ * Substitutes the skeleton's three content slots and writes it into the
+ * project dir the CLI will actually check on `resume` (mangled from `cwd`,
+ * not `findTranscriptPath`'s scan-all-dirs convenience, which is a
+ * NanoClaw-side reading shortcut, not how the real CLI resolves `resume`).
+ */
+function buildSkeletonTranscript(cwd: string, lastUserMessage: string, literalHistoryMarkdown: string, briefingMarkdown: string): SkeletonResume {
+  const entries = loadSkeletonEntries();
+  entries[0].message.content = lastUserMessage;
+  setToolResultText(entries[2], literalHistoryMarkdown);
+  setToolResultText(entries[4], briefingMarkdown);
+
+  const ephemeralId = randomUUID();
+  for (const e of entries) e.sessionId = ephemeralId;
+
+  const projectsDir = path.join(claudeProjectsDir(), mangleCwd(cwd));
+  fs.mkdirSync(projectsDir, { recursive: true });
+  const ephemeralPath = path.join(projectsDir, `${ephemeralId}.jsonl`);
+  fs.writeFileSync(ephemeralPath, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+  return { ephemeralId, ephemeralPath, skeletonEntryCount: entries.length };
+}
+
+/** Renders the last `window` real messages as markdown, reusing the same parse/format pair archiveTranscriptFile uses for conversation exports. */
+function buildLiteralHistoryMarkdown(canonicalPath: string, window: number, assistantName?: string): string {
+  const raw = fs.readFileSync(canonicalPath, 'utf-8');
+  const messages = parseTranscript(raw).slice(-window);
+  if (messages.length === 0) return '_(no recent conversation)_';
+  return formatTranscriptMarkdown(messages, null, assistantName);
+}
+
+/**
+ * The most recent real user-role message, for the skeleton's opening slot —
+ * literally "the last message" at the point the skeleton is built, since
+ * this turn's live prompt hasn't been added to the transcript yet (it's
+ * pushed separately via the live MessageStream after resume, same as always
+ * — the skeleton primes context, it doesn't replace the live turn).
+ */
+function lastRealUserMessage(canonicalPath: string): string {
+  const raw = fs.readFileSync(canonicalPath, 'utf-8');
+  const messages = parseTranscript(raw);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') return messages[i].content;
+  }
+  return '(no prior message)';
+}
+
+function lastRealUuid(canonicalPath: string): string | null {
+  const raw = fs.readFileSync(canonicalPath, 'utf-8');
+  const lines = raw.split('\n').filter((l) => l.trim());
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const d = JSON.parse(lines[i]);
+      if (d.uuid) return d.uuid;
+    } catch {
+      /* skip unparseable lines */
+    }
+  }
+  return null;
+}
+
+/**
+ * After a skeleton turn completes, appends whatever new entries the SDK
+ * wrote onto the ephemeral copy back onto the canonical transcript, with
+ * sessionId rewritten to canonical. Unlike the old truncated-copy approach,
+ * the skeleton's own uuids have no structural relationship to canonical's
+ * chain, so the first newly-generated entry's parentUuid is repointed onto
+ * canonical's real last uuid before appending — everything after that
+ * chains off the model's own freshly-generated uuids as normal.
+ */
+function mirrorSkeletonTurnToCanonical(canonicalId: string, canonicalPath: string, skeleton: SkeletonResume): void {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(skeleton.ephemeralPath, 'utf-8');
+  } catch (err) {
+    log(`mirrorSkeletonTurnToCanonical: failed to read ephemeral transcript: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  const lines = raw.split('\n').filter((l) => l.trim());
+  const newLines = lines.slice(skeleton.skeletonEntryCount);
+  if (newLines.length === 0) return;
+
+  const canonicalLeaf = lastRealUuid(canonicalPath);
+  const toAppend: string[] = [];
+  newLines.forEach((line, i) => {
+    try {
+      const d = JSON.parse(line);
+      if (TRANSCRIPT_MARKER_TYPES.has(d.type)) return;
+      d.sessionId = canonicalId;
+      if (i === 0) d.parentUuid = canonicalLeaf;
+      toAppend.push(JSON.stringify(d));
+    } catch {
+      /* skip unparseable lines */
+    }
+  });
+  if (toAppend.length === 0) return;
+  try {
+    fs.appendFileSync(canonicalPath, toAppend.join('\n') + '\n');
+  } catch (err) {
+    log(`mirrorSkeletonTurnToCanonical: failed to append to canonical transcript: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 function claudeProjectsDir(): string {
   const base = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude');
   return path.join(base, 'projects');
@@ -477,15 +649,21 @@ export class ClaudeProvider implements AgentProvider {
       raw = template;
     }
     const workingMemory = raw.trim();
-    // The "keep this up to date" instruction lives here, not in the file
-    // itself — if it lived in the file, Lumen deleting it (or the file
-    // getting truncated) would make the scratchpad look freeform/optional
-    // rather than a maintained live document.
-    instructions = `${instructions ?? ''}\n\n# Your working notes for this conversation (keep this file at ${workingMemoryPath} up to date at all times)\n\n${workingMemory}`;
     const workingMemoryLines = workingMemory.split('\n').length;
+    let workingMemoryOverflowNote = '';
     if (workingMemoryLines > WORKING_MEMORY_HARD_CAP_LINES) {
-      instructions += `\n\n<system>working-memory.md is ${workingMemoryLines} lines, well past its ${WORKING_MEMORY_SOFT_CAP_LINES}-line soft cap. Offload settled/historical items into the vault (remember, or a proper note) and trim this file back down — it's a scratchpad, not an archive, and it's eating context you need for thinking.</system>`;
+      workingMemoryOverflowNote = `\n\n<system>working-memory.md is ${workingMemoryLines} lines, well past its ${WORKING_MEMORY_SOFT_CAP_LINES}-line soft cap. Offload settled/historical items into the vault (remember, or a proper note) and trim this file back down — it's a scratchpad, not an archive, and it's eating context you need for thinking.</system>`;
     }
+    // Line count of the actual on-disk file (not the trimmed display copy) —
+    // this is what a line-numbered edit tool (sed, patch-by-line) needs to
+    // target the real last line, so it must match `raw`, not `workingMemory`.
+    const workingMemoryEndMarker = `\n\n--- ${workingMemoryPath} ends at line ${raw.split('\n').length}`;
+    // Delivery mode decided further down, once we know whether a synthetic
+    // context skeleton was actually built this turn — 'system' (default, or
+    // synthetic mode with no canonical transcript yet) folds it into the
+    // system prompt right here; synthetic mode with a built skeleton delivers
+    // it via the skeleton's load_briefing slot instead, no system-prompt
+    // fallback text at all this turn.
 
     // One correlation ID per turn (per `.query()` call, not per provider
     // instance -- the provider is long-lived across many turns). Every
@@ -499,12 +677,60 @@ export class ClaudeProvider implements AgentProvider {
     const turnCorrelationId = randomUUID();
     log(`turn correlation id: ${turnCorrelationId}`);
 
+    // ── Synthetic context (A/B, off by default — see helpers above) ──
+    const syntheticMode = syntheticContextEnabled();
+    let canonicalId: string | undefined = input.continuation;
+    let skeleton: SkeletonResume | null = null;
+    let resumeTarget = input.continuation;
+    if (syntheticMode) {
+      try {
+        const marked = fs.readFileSync(canonicalMarkerPath(input.cwd), 'utf-8').trim();
+        if (marked) canonicalId = marked;
+      } catch {
+        // No marker yet — canonicalId stays input.continuation (undefined on a brand-new session).
+      }
+      const canonicalPath = canonicalId ? findTranscriptPath(canonicalId) : null;
+      if (canonicalPath) {
+        const literalHistory = buildLiteralHistoryMarkdown(canonicalPath, syntheticContextTurnWindow(), this.assistantName);
+        const lastUserMessage = lastRealUserMessage(canonicalPath);
+        // Real Briefer content, async + one-turn-behind (see
+        // docs/synthetic-context.md): the host kicks off a Briefer call on
+        // message arrival (src/modules/synthetic-context/briefing-cache.ts)
+        // and writes the result here once it resolves ~30-45s later — too
+        // slow to block this turn on, so THIS turn sees whatever was
+        // computed for the *previous* message. Falls back to working-memory.md
+        // if the cache file doesn't exist yet (brand-new session, or the
+        // host-side kickoff hasn't completed a single round yet).
+        let briefingContent: string;
+        try {
+          briefingContent = fs.readFileSync(path.join(input.cwd, '.briefing-cache.md'), 'utf-8');
+        } catch {
+          briefingContent = `${workingMemory}${workingMemoryEndMarker}${workingMemoryOverflowNote}`;
+        }
+        skeleton = buildSkeletonTranscript(input.cwd, lastUserMessage, literalHistory, briefingContent);
+        resumeTarget = skeleton.ephemeralId;
+        log(`synthetic context: resuming skeleton ${skeleton.ephemeralId} (${skeleton.skeletonEntryCount} entries) of canonical ${canonicalId}`);
+      }
+    }
+    // Working-memory delivery: content goes via the skeleton's load_briefing
+    // slot when one was built this turn; system-prompt fallback otherwise
+    // (mode is off, or this is a brand-new session with no canonical
+    // transcript yet to build a skeleton from — next turn's canonical marker
+    // will exist). The maintenance instruction below is NOT part of that
+    // content split — it must reach every turn regardless of delivery path,
+    // since the skeleton's load_briefing slot is a substituted tool_result,
+    // not a place to append a standing instruction.
+    const workingMemoryInstruction = `\n\n# Your working notes for this conversation\n\nAfter you have finished your tasks and finished responding to the user, update the file at ${workingMemoryPath} to reflect any changes or decisions or open questions that remain. This file is how you anchor yourself and maintain continuity across turns.`;
+    instructions = skeleton
+      ? `${instructions ?? ''}${workingMemoryInstruction}`
+      : `${instructions ?? ''}${workingMemoryInstruction}\n\n${workingMemory}${workingMemoryEndMarker}${workingMemoryOverflowNote}`;
+
     const sdkResult = sdkQuery({
       prompt: stream,
       options: {
         cwd: input.cwd,
         additionalDirectories: this.additionalDirectories,
-        resume: input.continuation,
+        resume: resumeTarget,
         pathToClaudeCodeExecutable: '/pnpm/claude',
         systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
         allowedTools: [
@@ -541,7 +767,19 @@ export class ClaudeProvider implements AgentProvider {
         yield { type: 'activity' };
 
         if (message.type === 'system' && message.subtype === 'init') {
-          yield { type: 'init', continuation: message.session_id };
+          if (syntheticMode) {
+            // First-ever turn for this session: nothing existed to truncate,
+            // so the SDK's own fresh session becomes canonical going forward.
+            if (!canonicalId) canonicalId = message.session_id;
+            try {
+              fs.writeFileSync(canonicalMarkerPath(input.cwd), canonicalId);
+            } catch (err) {
+              log(`Failed to write canonical session marker: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            yield { type: 'init', continuation: canonicalId };
+          } else {
+            yield { type: 'init', continuation: message.session_id };
+          }
         } else if (message.type === 'result') {
           // `result` text exists only on subtype:"success"; error subtypes
           // (e.g. a non-retryable 403 billing_error) carry their message in
@@ -561,6 +799,14 @@ export class ClaudeProvider implements AgentProvider {
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
           const tn = message as { summary?: string };
           yield { type: 'progress', message: tn.summary || 'Task notification' };
+        }
+      }
+      if (skeleton && canonicalId) {
+        const canonicalPath = findTranscriptPath(canonicalId);
+        if (canonicalPath) {
+          mirrorSkeletonTurnToCanonical(canonicalId, canonicalPath, skeleton);
+        } else {
+          log(`synthetic context: canonical transcript ${canonicalId} vanished, could not mirror new turns`);
         }
       }
       log(`Query completed after ${messageCount} SDK messages`);

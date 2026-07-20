@@ -165,6 +165,18 @@ async function sweep(): Promise<void> {
   }
   // MODULE-HOOK:approvals-reason-sweep:end
 
+  // Finalize any prompt_mbif_crew hold older than 12h as a silent deny — no
+  // sense letting an unactioned vault-mutation request linger. Central-DB
+  // scan, once per tick.
+  // MODULE-HOOK:mbif-crew-timeout-sweep:start
+  try {
+    const { sweepStaleMbifCrewRequests } = await import('./modules/mbif-crew/index.js');
+    await sweepStaleMbifCrewRequests();
+  } catch (err) {
+    log.error('MBIF-crew timeout sweep failed', { err });
+  }
+  // MODULE-HOOK:mbif-crew-timeout-sweep:end
+
   setTimeout(sweep, SWEEP_INTERVAL_MS);
 }
 

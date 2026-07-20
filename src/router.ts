@@ -32,6 +32,7 @@ import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js
 import { log } from './log.js';
 import { resolveSession, writeSessionMessage, writeOutboundDirect } from './session-manager.js';
 import { wakeContainer } from './container-runner.js';
+import { maybeKickoffBriefing } from './modules/synthetic-context/briefing-cache.js';
 import { getSession } from './db/sessions.js';
 import type { AgentGroup, MessagingGroup, MessagingGroupAgent } from './types.js';
 import type { InboundEvent } from './channels/adapter.js';
@@ -502,6 +503,17 @@ async function deliverToAgent(
       log.info('Admin command denied by gate', { command: gate.command, userId, agentGroupId: agent.agent_group_id });
       return;
     }
+  }
+
+  // Briefing kickoff for synthetic-context-enabled groups only (see
+  // docs/synthetic-context.md). No-ops immediately for every other group.
+  // Async by default (fire-and-forget, doesn't block the wake write below);
+  // NANOCLAW_SYNTHETIC_CONTEXT_SYNC flips the returned promise to resolve
+  // only once the fresh briefing is written, so this await must happen
+  // BEFORE writeSessionMessage (that's what actually wakes the container).
+  if (event.message.kind === 'chat' || event.message.kind === 'chat-sdk') {
+    const parsed = safeParseContent(event.message.content);
+    if (parsed.text) await maybeKickoffBriefing(session.agent_group_id, parsed.text);
   }
 
   writeSessionMessage(session.agent_group_id, session.id, {

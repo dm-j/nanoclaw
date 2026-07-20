@@ -58,7 +58,22 @@ export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: strin
     '## New message from David — prepare a briefing for this',
     '',
     newMessage,
+    '',
+    '## Output constraint',
+    '',
+    'The briefing text is the whole response — do not append a `### Suggested next agent` or',
+    '`### Post-it` section to it. Post-it is your own persistent state, written separately to',
+    '`{{meta}}/states/briefer.md` per your instructions — it does not belong in the briefing output.',
   ].join('\n');
+}
+
+/** Per-call overrides — used by callers that need a different model/route than
+ * the installation-wide MBIF_BRIEFER_MODEL/MBIF_BRIEFER_BASE_URL defaults,
+ * without changing those defaults for every other caller (e.g. the on-demand
+ * `recall` tool keeps using sonnet unless the operator sets the env vars). */
+export interface BrieferOverrides {
+  model?: string;
+  baseUrl?: string;
 }
 
 /**
@@ -70,21 +85,24 @@ export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: strin
  * Retries once on a non-timeout failure, as cheap insurance against any
  * remaining transient failure (network blip, etc).
  */
-export async function runBriefer(prompt: string): Promise<BrieferResult> {
+export async function runBriefer(prompt: string, overrides?: BrieferOverrides): Promise<BrieferResult> {
   try {
-    return await runBrieferOnce(prompt);
+    return await runBrieferOnce(prompt, overrides);
   } catch (err) {
     if ((err as Error).message.includes('timed out')) throw err;
     log.warn('briefer failed, retrying once', { err });
     await new Promise((r) => setTimeout(r, 1500));
-    return runBrieferOnce(prompt);
+    return runBrieferOnce(prompt, overrides);
   }
 }
 
-function runBrieferOnce(prompt: string): Promise<BrieferResult> {
+function runBrieferOnce(prompt: string, overrides?: BrieferOverrides): Promise<BrieferResult> {
   if (!VAULT_PATH) {
     return Promise.reject(new Error('MBIF_VAULT_PATH is not configured'));
   }
+
+  const model = overrides?.model || BRIEFER_MODEL;
+  const baseUrl = overrides?.baseUrl || ANTHROPIC_BASE_URL;
 
   const args = [
     '-p',
@@ -93,14 +111,14 @@ function runBrieferOnce(prompt: string): Promise<BrieferResult> {
     '--output-format',
     'json',
     '--no-session-persistence',
-    ...(BRIEFER_MODEL ? ['--model', BRIEFER_MODEL] : []),
+    ...(model ? ['--model', model] : []),
     prompt,
   ];
 
   const spawnEnv = {
     ...process.env,
     ...(BRIEFER_OAUTH_TOKEN ? { CLAUDE_CODE_OAUTH_TOKEN: BRIEFER_OAUTH_TOKEN } : {}),
-    ...(ANTHROPIC_BASE_URL ? { ANTHROPIC_BASE_URL } : {}),
+    ...(baseUrl ? { ANTHROPIC_BASE_URL: baseUrl } : {}),
   };
 
   return new Promise<BrieferResult>((resolve, reject) => {
