@@ -19,7 +19,11 @@ import path from 'path';
 
 import { BRIEFING_LOG_DIR, TIMEZONE } from '../config.js';
 import { log } from '../log.js';
-import { getEffectiveEndorsement } from '../modules/synthetic-context/wikilink-endorsements.js';
+import {
+  bumpEndorsement,
+  CITED_WEIGHT,
+  getEffectiveEndorsement,
+} from '../modules/synthetic-context/wikilink-endorsements.js';
 import { formatLocalStamp } from '../timezone.js';
 import {
   buildBrieferPrompt,
@@ -37,9 +41,14 @@ function cacheDir(vaultPath: string): string {
   return path.join(vaultPath, CACHE_SUBDIR);
 }
 
-function runMemsearch(args: string[]): Promise<string> {
+// memsearch has no --vault flag — it resolves the target vault from the
+// spawned process's own cwd, so this must always run with cwd set to the
+// vault, never inherited from the host daemon's own cwd (the nanoclaw
+// project root, which memsearch would otherwise silently treat as "no vault
+// index found" — no error, just an empty/wrong result set).
+function runMemsearch(args: string[], vaultPath: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(MEMSEARCH_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(MEMSEARCH_BIN, args, { cwd: vaultPath, stdio: ['ignore', 'pipe', 'pipe'] });
     const stdout: Buffer[] = [];
     const stderr: string[] = [];
     const timer = setTimeout(() => {
@@ -108,6 +117,43 @@ function normalizeWikilinkTarget(raw: string): string {
 // a highly-relevant unendorsed link under a stale, frequently-followed one.
 const ENDORSEMENT_WEIGHT = 0.1;
 
+const MAX_CACHE_LINKS = 10;
+
+/**
+ * Caps a ranked link list at `MAX_CACHE_LINKS`, filling by hotness bucket
+ * (highest first). A bucket that would overflow the limit is shuffled so the
+ * links kept from it are random, not an artifact of scrape order.
+ */
+function selectByHotness(
+  ranked: { link: string; hotness: number }[],
+  limit = MAX_CACHE_LINKS,
+): { link: string; hotness: number }[] {
+  const buckets = new Map<number, { link: string; hotness: number }[]>();
+  for (const r of ranked) {
+    const bucket = buckets.get(r.hotness);
+    if (bucket) bucket.push(r);
+    else buckets.set(r.hotness, [r]);
+  }
+  const levels = [...buckets.keys()].sort((a, b) => b - a);
+  const result: { link: string; hotness: number }[] = [];
+  for (const level of levels) {
+    const bucket = buckets.get(level)!;
+    const remaining = limit - result.length;
+    if (remaining <= 0) break;
+    if (bucket.length <= remaining) {
+      result.push(...bucket);
+    } else {
+      const shuffled = [...bucket];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      result.push(...shuffled.slice(0, remaining));
+    }
+  }
+  return result;
+}
+
 /**
  * Best-effort — a cache-lookup failure should never block a real Briefer
  * call, just skip the hint. Pools links across the top-k similar past
@@ -120,7 +166,7 @@ async function lookupCache(vaultPath: string, query: string): Promise<CacheHit |
   const dir = cacheDir(vaultPath);
   if (!fs.existsSync(dir)) return null;
   try {
-    const out = await runMemsearch(['search', query, '-k', '3', '--source-prefix', CACHE_SUBDIR, '-j']);
+    const out = await runMemsearch(['search', query, '-k', '3', '--source-prefix', CACHE_SUBDIR, '-j'], vaultPath);
     const parsed = JSON.parse(out) as Array<{ path?: string; text?: string; content?: string; score?: number }>;
     if (!Array.isArray(parsed) || parsed.length === 0) return null;
 
@@ -139,7 +185,8 @@ async function lookupCache(vaultPath: string, query: string): Promise<CacheHit |
     if (ranked.size === 0) return null;
 
     const sorted = [...ranked.values()].sort((a, b) => b.score - a.score);
-    const links = sorted.map((r) => r.link);
+    const capped = new Set(selectByHotness(sorted).map((r) => r.link));
+    const links = sorted.filter((r) => capped.has(r.link)).map((r) => r.link);
     const hotness = Object.fromEntries(sorted.map((r) => [r.link, Math.round(r.hotness * 100) / 100]));
     return { query, links, hotness };
   } catch (err) {
@@ -164,7 +211,7 @@ async function writeCacheEntry(vaultPath: string, query: string, links: string[]
     ].join('\n');
     const body = links.map((l) => `- ${l}`).join('\n') + '\n';
     fs.writeFileSync(path.join(dir, `${id}.md`), frontmatter + body);
-    await runMemsearch(['index', dir]);
+    await runMemsearch(['index', dir], vaultPath);
   } catch (err) {
     log.warn('wikilink cache write failed (non-fatal)', { err });
   }
@@ -244,6 +291,10 @@ export async function runBrieferWithWikilinkCache(
 
   const links = extractWikilinks(result.briefing);
   await writeCacheEntry(vaultPath, newMessage, links);
+  // Citing a link in the briefing is a weaker endorsement than Lumen actually
+  // following it (load_obsidian_wikilink), but still a real relevance signal
+  // — same capped/decaying counter, same ranking pool.
+  for (const link of links) bumpEndorsement(normalizeWikilinkTarget(link), CITED_WEIGHT);
 
   const workingMemory =
     workingMemoryPath && fs.existsSync(workingMemoryPath) ? fs.readFileSync(workingMemoryPath, 'utf-8') : null;

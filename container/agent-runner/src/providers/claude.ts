@@ -654,6 +654,10 @@ export class ClaudeProvider implements AgentProvider {
     if (workingMemoryLines > WORKING_MEMORY_HARD_CAP_LINES) {
       workingMemoryOverflowNote = `\n\n<system>working-memory.md is ${workingMemoryLines} lines, well past its ${WORKING_MEMORY_SOFT_CAP_LINES}-line soft cap. Offload settled/historical items into the vault (remember, or a proper note) and trim this file back down — it's a scratchpad, not an archive, and it's eating context you need for thinking.</system>`;
     }
+    // Line count of the actual on-disk file (not the trimmed display copy) —
+    // this is what a line-numbered edit tool (sed, patch-by-line) needs to
+    // target the real last line, so it must match `raw`, not `workingMemory`.
+    const workingMemoryEndMarker = `\n\n--- ${workingMemoryPath} ends at line ${raw.split('\n').length}`;
     // Delivery mode decided further down, once we know whether a synthetic
     // context skeleton was actually built this turn — 'system' (default, or
     // synthetic mode with no canonical transcript yet) folds it into the
@@ -701,20 +705,25 @@ export class ClaudeProvider implements AgentProvider {
         try {
           briefingContent = fs.readFileSync(path.join(input.cwd, '.briefing-cache.md'), 'utf-8');
         } catch {
-          briefingContent = `${workingMemory}${workingMemoryOverflowNote}`;
+          briefingContent = `${workingMemory}${workingMemoryEndMarker}${workingMemoryOverflowNote}`;
         }
         skeleton = buildSkeletonTranscript(input.cwd, lastUserMessage, literalHistory, briefingContent);
         resumeTarget = skeleton.ephemeralId;
         log(`synthetic context: resuming skeleton ${skeleton.ephemeralId} (${skeleton.skeletonEntryCount} entries) of canonical ${canonicalId}`);
       }
     }
-    // Working-memory delivery: via the skeleton's load_briefing slot when one
-    // was built this turn; system-prompt fallback otherwise (mode is off, or
-    // this is a brand-new session with no canonical transcript yet to build
-    // a skeleton from — next turn's canonical marker will exist).
-    if (!skeleton) {
-      instructions = `${instructions ?? ''}\n\n# Your working notes for this conversation (keep this file at ${workingMemoryPath} up to date at all times)\n\n${workingMemory}${workingMemoryOverflowNote}`;
-    }
+    // Working-memory delivery: content goes via the skeleton's load_briefing
+    // slot when one was built this turn; system-prompt fallback otherwise
+    // (mode is off, or this is a brand-new session with no canonical
+    // transcript yet to build a skeleton from — next turn's canonical marker
+    // will exist). The maintenance instruction below is NOT part of that
+    // content split — it must reach every turn regardless of delivery path,
+    // since the skeleton's load_briefing slot is a substituted tool_result,
+    // not a place to append a standing instruction.
+    const workingMemoryInstruction = `\n\n# Your working notes for this conversation\n\nAfter you have finished your tasks and finished responding to the user, update the file at ${workingMemoryPath} to reflect any changes or decisions or open questions that remain. This file is how you anchor yourself and maintain continuity across turns.`;
+    instructions = skeleton
+      ? `${instructions ?? ''}${workingMemoryInstruction}`
+      : `${instructions ?? ''}${workingMemoryInstruction}\n\n${workingMemory}${workingMemoryEndMarker}${workingMemoryOverflowNote}`;
 
     const sdkResult = sdkQuery({
       prompt: stream,

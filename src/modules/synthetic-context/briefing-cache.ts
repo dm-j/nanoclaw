@@ -26,7 +26,7 @@ const VAULT_PATH = process.env.MBIF_VAULT_PATH || env.MBIF_VAULT_PATH;
 // Scoped to this purpose only — see docs/synthetic-context.md "Model
 // override, not a permanent change". Does not touch MBIF_BRIEFER_MODEL /
 // MBIF_BRIEFER_BASE_URL, which still govern the on-demand `recall` tool.
-const SYNTHETIC_BRIEFING_OVERRIDES = { model: 'ollama/gemma4:31b-cloud', baseUrl: 'http://localhost:8787' };
+const SYNTHETIC_BRIEFING_OVERRIDES = { model: 'ollama/kimi-k2.6:cloud', baseUrl: 'http://localhost:8787' };
 
 function synthContextEnabledFor(agentGroupId: string): boolean {
   const config = getContainerConfig(agentGroupId);
@@ -45,10 +45,12 @@ function briefingCachePath(agentGroupId: string): string | null {
   return path.join(GROUPS_DIR, group.folder, '.briefing-cache.md');
 }
 
-function workingMemoryPath(agentGroupId: string): string | undefined {
-  const group = getAgentGroup(agentGroupId);
-  if (!group) return undefined;
-  return path.join(GROUPS_DIR, group.folder, 'working-memory.md');
+// groups/<folder>/working-memory.md is a symlink to /workspace/vault/Meta/working-memory.md
+// (a container-internal path) — following it from the host would need
+// VAULT_PATH anyway, so just build the real vault-relative path directly.
+function workingMemoryPath(): string | undefined {
+  if (!VAULT_PATH) return undefined;
+  return path.join(VAULT_PATH, 'Meta', 'working-memory.md');
 }
 
 // A/B lever for comparing the two tradeoffs directly: async (default, one-turn
@@ -88,7 +90,7 @@ export function maybeKickoffBriefing(agentGroupId: string, messageText: string):
     [],
     messageText,
     SYNTHETIC_BRIEFING_OVERRIDES,
-    workingMemoryPath(agentGroupId),
+    workingMemoryPath(),
   )
     .then((result) => {
       fs.writeFileSync(cachePath, result.briefing);
