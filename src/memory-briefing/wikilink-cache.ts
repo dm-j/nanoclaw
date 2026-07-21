@@ -119,39 +119,40 @@ const ENDORSEMENT_WEIGHT = 0.1;
 
 const MAX_CACHE_LINKS = 6;
 
+function shuffleInPlace<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 /**
- * Caps a ranked link list at `MAX_CACHE_LINKS`, filling by hotness bucket
- * (highest first). A bucket that would overflow the limit is shuffled so the
- * links kept from it are random, not an artifact of scrape order.
+ * Floors hotness to an integer, groups into buckets on that, orders buckets
+ * highest first, and shuffles within each bucket — raw float hotness rarely
+ * ties exactly, so without flooring every "bucket" is really just one item
+ * and the ordering is a silent artifact of scrape/insertion order rather
+ * than a real signal. Flooring makes near-equal-hotness links actually land
+ * in the same bucket so the shuffle has something to do.
  */
+function bucketByHotness<T>(items: T[], hotnessOf: (item: T) => number): T[] {
+  const buckets = new Map<number, T[]>();
+  for (const item of items) {
+    const level = Math.floor(hotnessOf(item));
+    const bucket = buckets.get(level);
+    if (bucket) bucket.push(item);
+    else buckets.set(level, [item]);
+  }
+  const levels = [...buckets.keys()].sort((a, b) => b - a);
+  return levels.flatMap((level) => shuffleInPlace(buckets.get(level)!));
+}
+
+/** Caps a ranked link list at `MAX_CACHE_LINKS` after hotness-bucketing (see `bucketByHotness`). */
 function selectByHotness(
   ranked: { link: string; hotness: number }[],
   limit = MAX_CACHE_LINKS,
 ): { link: string; hotness: number }[] {
-  const buckets = new Map<number, { link: string; hotness: number }[]>();
-  for (const r of ranked) {
-    const bucket = buckets.get(r.hotness);
-    if (bucket) bucket.push(r);
-    else buckets.set(r.hotness, [r]);
-  }
-  const levels = [...buckets.keys()].sort((a, b) => b - a);
-  const result: { link: string; hotness: number }[] = [];
-  for (const level of levels) {
-    const bucket = buckets.get(level)!;
-    const remaining = limit - result.length;
-    if (remaining <= 0) break;
-    if (bucket.length <= remaining) {
-      result.push(...bucket);
-    } else {
-      const shuffled = [...bucket];
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-      }
-      result.push(...shuffled.slice(0, remaining));
-    }
-  }
-  return result;
+  return bucketByHotness(ranked, (r) => r.hotness).slice(0, limit);
 }
 
 /**
@@ -294,7 +295,7 @@ export async function runBrieferWithWikilinkCache(
   const hit = await lookupCache(vaultPath, newMessage);
   const lookupMs = Date.now() - lookupStart;
   if (hit) log.info('wikilink cache hit, folding into prompt', { query: newMessage.slice(0, 80), links: hit.links });
-  const hotnessSortedLinks = hit ? [...hit.links].sort((a, b) => hit.hotness[b] - hit.hotness[a]) : [];
+  const hotnessSortedLinks = hit ? bucketByHotness(hit.links, (link) => hit.hotness[link] ?? 0) : [];
   const workingMemory =
     workingMemoryPath && fs.existsSync(workingMemoryPath) ? fs.readFileSync(workingMemoryPath, 'utf-8') : null;
   const basePrompt = buildBrieferPrompt(recentTurns, newMessage, previousBriefing);
