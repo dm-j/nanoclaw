@@ -54,7 +54,7 @@ export interface BrieferResult {
  * then the new message clearly separated and last so it reads as the thing
  * to prepare a briefing for, not one more line of history.
  */
-export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: string): string {
+export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: string, previousBriefing?: string): string {
   const history = recentTurns.length
     ? recentTurns.map((t) => `**${t.role === 'user' ? 'David' : 'Lumen'}:** ${t.text}`).join('\n\n')
     : '_(no recent turns)_';
@@ -64,6 +64,9 @@ export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: strin
     '',
     history,
     '',
+    ...(previousBriefing
+      ? ['## Your previous briefing (stale — update it, do not just repeat it)', '', previousBriefing, '']
+      : []),
     '## New message from David — prepare a briefing for this',
     '',
     newMessage,

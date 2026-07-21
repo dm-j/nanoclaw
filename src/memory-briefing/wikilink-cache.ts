@@ -287,6 +287,7 @@ export async function runBrieferWithWikilinkCache(
   newMessage: string,
   overrides?: BrieferOverrides,
   workingMemoryPath?: string,
+  previousBriefing?: string,
 ): Promise<BrieferResult> {
   const totalStart = Date.now();
   const lookupStart = Date.now();
@@ -294,9 +295,10 @@ export async function runBrieferWithWikilinkCache(
   const lookupMs = Date.now() - lookupStart;
   if (hit) log.info('wikilink cache hit, folding into prompt', { query: newMessage.slice(0, 80), links: hit.links });
   const hotnessSortedLinks = hit ? [...hit.links].sort((a, b) => hit.hotness[b] - hit.hotness[a]) : [];
+  const basePrompt = buildBrieferPrompt(recentTurns, newMessage, previousBriefing);
   const prompt = hit
-    ? `${buildBrieferPrompt(recentTurns, newMessage)}\n\n## Cached hint (unverified — a similar past query cited these; check, don't assume)\n\n${hotnessSortedLinks.join('\n')}\n`
-    : buildBrieferPrompt(recentTurns, newMessage);
+    ? `${basePrompt}\n\n## Cached hint (unverified — a similar past query cited these; check, don't assume)\n\n${hotnessSortedLinks.join('\n')}\n`
+    : basePrompt;
 
   const briefingStart = Date.now();
   const result = await runBriefer(prompt, overrides);

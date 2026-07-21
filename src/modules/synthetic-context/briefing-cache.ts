@@ -105,7 +105,15 @@ interface FlightState {
 const flightState = new Map<string, FlightState>();
 
 function runBriefingCall(agentGroupId: string, cachePath: string, messageText: string): Promise<void> {
-  return runBrieferWithWikilinkCache(VAULT_PATH!, [], messageText, SYNTHETIC_BRIEFING_OVERRIDES, workingMemoryPath())
+  const previousBriefing = fs.existsSync(cachePath) ? fs.readFileSync(cachePath, 'utf-8') : undefined;
+  return runBrieferWithWikilinkCache(
+    VAULT_PATH!,
+    [],
+    messageText,
+    SYNTHETIC_BRIEFING_OVERRIDES,
+    workingMemoryPath(),
+    previousBriefing,
+  )
     .then((result) => {
       fs.writeFileSync(cachePath, result.briefing);
       log.debug('synthetic-context briefing cache updated', { agentGroupId, costUsd: result.costUsd });
