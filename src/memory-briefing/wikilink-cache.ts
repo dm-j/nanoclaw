@@ -117,7 +117,7 @@ function normalizeWikilinkTarget(raw: string): string {
 // a highly-relevant unendorsed link under a stale, frequently-followed one.
 const ENDORSEMENT_WEIGHT = 0.1;
 
-const MAX_CACHE_LINKS = 10;
+const MAX_CACHE_LINKS = 6;
 
 /**
  * Caps a ranked link list at `MAX_CACHE_LINKS`, filling by hotness bucket
@@ -221,6 +221,7 @@ interface TimingInfo {
   lookupMs: number;
   briefingMs: number;
   totalMs: number;
+  promptChars: number;
 }
 
 /** One file per active clock hour (local time) — never created for hours with no briefing. */
@@ -238,12 +239,23 @@ function appendBriefingLog(
     const hitLine = hit
       ? `**Wikilink cache hit:** ${hit.links.map((l) => `${l} (hotness ${hit.hotness[l]})`).join(', ')}`
       : '**Wikilink cache:** miss';
+    const fullReads = result.toolCalls.filter((t) => t.tool === 'Read' && t.detail.endsWith('(full file)')).length;
+    const toolCallLines = result.toolCalls.length
+      ? [
+          `**Tool calls (${result.toolCalls.length}, ${fullReads} full-file read${fullReads === 1 ? '' : 's'}):**`,
+          '',
+          ...result.toolCalls.map((t) => `- \`${t.tool}\` ${t.detail} _(+${t.iterationMs}ms)_`),
+          '',
+        ]
+      : ['**Tool calls:** none recorded', ''];
     const entry = [
       `## ${stamp}`,
       '',
       hitLine,
       `**Timing:** lookup ${timing.lookupMs}ms, briefing ${timing.briefingMs}ms, total ${timing.totalMs}ms`,
+      `**Prompt length:** ${timing.promptChars} chars`,
       '',
+      ...toolCallLines,
       `**Query:** ${query.slice(0, 300)}`,
       '',
       '**working-memory.md:**',
@@ -281,8 +293,9 @@ export async function runBrieferWithWikilinkCache(
   const hit = await lookupCache(vaultPath, newMessage);
   const lookupMs = Date.now() - lookupStart;
   if (hit) log.info('wikilink cache hit, folding into prompt', { query: newMessage.slice(0, 80), links: hit.links });
+  const hotnessSortedLinks = hit ? [...hit.links].sort((a, b) => hit.hotness[b] - hit.hotness[a]) : [];
   const prompt = hit
-    ? `${buildBrieferPrompt(recentTurns, newMessage)}\n\n## Cached hint (unverified — a similar past query cited these; check, don't assume)\n\n${hit.links.join(', ')}`
+    ? `${buildBrieferPrompt(recentTurns, newMessage)}\n\n## Cached hint (unverified — a similar past query cited these; check, don't assume)\n\n${hotnessSortedLinks.join('\n')}\n`
     : buildBrieferPrompt(recentTurns, newMessage);
 
   const briefingStart = Date.now();
@@ -299,6 +312,12 @@ export async function runBrieferWithWikilinkCache(
   const workingMemory =
     workingMemoryPath && fs.existsSync(workingMemoryPath) ? fs.readFileSync(workingMemoryPath, 'utf-8') : null;
   const totalMs = Date.now() - totalStart;
-  appendBriefingLog(newMessage, hit, result, { lookupMs, briefingMs, totalMs }, workingMemory);
+  appendBriefingLog(
+    newMessage,
+    hit,
+    result,
+    { lookupMs, briefingMs, totalMs, promptChars: prompt.length },
+    workingMemory,
+  );
   return result;
 }

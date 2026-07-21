@@ -21,6 +21,7 @@ import path from 'path';
 import { writeMessageOut } from '../db/messages-out.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
+import { withUsageLog } from './usage-log.js';
 
 function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
@@ -211,4 +212,15 @@ export const loadBriefing: McpToolDefinition = {
   },
 };
 
-registerTools([recall, remember, loadTranscript, loadBriefing]);
+export const loadWorkingMemory: McpToolDefinition = {
+  tool: {
+    name: 'load_working_memory',
+    description: 'Internal — do not call. The current turn already has working-memory.md loaded via a synthetic tool result.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  async handler() {
+    return ok('This session has already loaded working memory for this turn.');
+  },
+};
+
+registerTools([recall, remember, loadTranscript, loadBriefing, loadWorkingMemory].map(withUsageLog));

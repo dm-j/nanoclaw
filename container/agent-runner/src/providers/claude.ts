@@ -360,16 +360,64 @@ function setToolResultText(entry: any, text: string): void {
 }
 
 /**
- * Substitutes the skeleton's three content slots and writes it into the
+ * The captured template's uuid/parentUuid chain, promptId, message.id, and
+ * tool_use id fields are all literal fixed strings — loadSkeletonEntries()
+ * re-parses the same static file every call and buildSkeletonTranscript only
+ * ever overwrote sessionId. That meant every skeleton-based request, for
+ * every turn, for every user, sent byte-identical ids on the wire (2026-07-21
+ * discussion — suspected of confusing whatever request-level dedup/caching
+ * Ollama Cloud does internally, though never confirmed as root cause). Fresh
+ * random ids per build, chained the same way the template's were, removes
+ * the collision regardless of whether it was ever actually the culprit.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function randomizeSkeletonIds(entries: any[]): void {
+  const promptId = randomUUID();
+  let pendingToolUseId: string | null = null;
+
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const prevUuid: string | null = i === 0 ? null : entries[i - 1].uuid;
+    entry.uuid = randomUUID();
+    entry.parentUuid = prevUuid;
+    if ('promptId' in entry) entry.promptId = promptId;
+
+    const content = entry.message?.content;
+    if (Array.isArray(content) && content[0]?.type === 'tool_use') {
+      const msgId = `msg_${randomUUID().replace(/-/g, '')}`;
+      const callId = `call_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+      entry.message.id = msgId;
+      content[0].id = callId;
+      pendingToolUseId = callId;
+    } else if (Array.isArray(content) && content[0]?.type === 'tool_result') {
+      content[0].tool_use_id = pendingToolUseId;
+      if ('sourceToolAssistantUUID' in entry) entry.sourceToolAssistantUUID = prevUuid;
+      pendingToolUseId = null;
+    } else if (entry.message?.id) {
+      entry.message.id = `msg_${randomUUID().replace(/-/g, '')}`;
+    }
+  }
+}
+
+/**
+ * Substitutes the skeleton's four content slots and writes it into the
  * project dir the CLI will actually check on `resume` (mangled from `cwd`,
  * not `findTranscriptPath`'s scan-all-dirs convenience, which is a
  * NanoClaw-side reading shortcut, not how the real CLI resolves `resume`).
  */
-function buildSkeletonTranscript(cwd: string, lastUserMessage: string, literalHistoryMarkdown: string, briefingMarkdown: string): SkeletonResume {
+function buildSkeletonTranscript(
+  cwd: string,
+  lastUserMessage: string,
+  literalHistoryMarkdown: string,
+  briefingMarkdown: string,
+  workingMemoryMarkdown: string,
+): SkeletonResume {
   const entries = loadSkeletonEntries();
+  randomizeSkeletonIds(entries);
   entries[0].message.content = lastUserMessage;
   setToolResultText(entries[2], literalHistoryMarkdown);
   setToolResultText(entries[4], briefingMarkdown);
+  setToolResultText(entries[6], workingMemoryMarkdown);
 
   const ephemeralId = randomUUID();
   for (const e of entries) e.sessionId = ephemeralId;
@@ -698,28 +746,31 @@ export class ClaudeProvider implements AgentProvider {
         // message arrival (src/modules/synthetic-context/briefing-cache.ts)
         // and writes the result here once it resolves ~30-45s later — too
         // slow to block this turn on, so THIS turn sees whatever was
-        // computed for the *previous* message. Falls back to working-memory.md
-        // if the cache file doesn't exist yet (brand-new session, or the
-        // host-side kickoff hasn't completed a single round yet).
+        // computed for the *previous* message. Working-memory.md gets its
+        // own dedicated skeleton slot below — it no longer doubles as the
+        // briefing fallback, since that conflated two different kinds of
+        // content and meant the working-memory content wasn't reliably in
+        // the same place turn over turn (bad for prefix stability too).
         let briefingContent: string;
         try {
           briefingContent = fs.readFileSync(path.join(input.cwd, '.briefing-cache.md'), 'utf-8');
         } catch {
-          briefingContent = `${workingMemory}${workingMemoryEndMarker}${workingMemoryOverflowNote}`;
+          briefingContent = '_(no briefing available yet — brand-new session or first round hasn\'t completed)_';
         }
-        skeleton = buildSkeletonTranscript(input.cwd, lastUserMessage, literalHistory, briefingContent);
+        const workingMemoryContent = `${workingMemory}${workingMemoryEndMarker}${workingMemoryOverflowNote}`;
+        skeleton = buildSkeletonTranscript(input.cwd, lastUserMessage, literalHistory, briefingContent, workingMemoryContent);
         resumeTarget = skeleton.ephemeralId;
         log(`synthetic context: resuming skeleton ${skeleton.ephemeralId} (${skeleton.skeletonEntryCount} entries) of canonical ${canonicalId}`);
       }
     }
-    // Working-memory delivery: content goes via the skeleton's load_briefing
-    // slot when one was built this turn; system-prompt fallback otherwise
-    // (mode is off, or this is a brand-new session with no canonical
-    // transcript yet to build a skeleton from — next turn's canonical marker
-    // will exist). The maintenance instruction below is NOT part of that
-    // content split — it must reach every turn regardless of delivery path,
-    // since the skeleton's load_briefing slot is a substituted tool_result,
-    // not a place to append a standing instruction.
+    // Working-memory delivery: content goes via the skeleton's own
+    // load_working_memory slot when one was built this turn; system-prompt
+    // fallback otherwise (mode is off, or this is a brand-new session with
+    // no canonical transcript yet to build a skeleton from — next turn's
+    // canonical marker will exist). The maintenance instruction below is NOT
+    // part of that content split — it must reach every turn regardless of
+    // delivery path, since a skeleton's tool-result slots are substituted
+    // content, not a place to append a standing instruction.
     const workingMemoryInstruction = `\n\n# Your working notes for this conversation\n\nAfter you have finished your tasks and finished responding to the user, update the file at ${workingMemoryPath} to reflect any changes or decisions or open questions that remain. This file is how you anchor yourself and maintain continuity across turns.`;
     instructions = skeleton
       ? `${instructions ?? ''}${workingMemoryInstruction}`
@@ -756,6 +807,11 @@ export class ClaudeProvider implements AgentProvider {
     });
 
     let aborted = false;
+    let sessionId: string | undefined;
+    let replyText: string | null = null;
+
+    const memoryWriterEnabled = this.env.NANOCLAW_MEMORY_WRITER === '1' || this.env.NANOCLAW_MEMORY_WRITER === 'true';
+    const runMemoryWriterFollowUp = this.runMemoryWriterFollowUp.bind(this);
 
     async function* translateEvents(): AsyncGenerator<ProviderEvent> {
       let messageCount = 0;
@@ -771,6 +827,7 @@ export class ClaudeProvider implements AgentProvider {
             // First-ever turn for this session: nothing existed to truncate,
             // so the SDK's own fresh session becomes canonical going forward.
             if (!canonicalId) canonicalId = message.session_id;
+            sessionId = canonicalId;
             try {
               fs.writeFileSync(canonicalMarkerPath(input.cwd), canonicalId);
             } catch (err) {
@@ -778,6 +835,7 @@ export class ClaudeProvider implements AgentProvider {
             }
             yield { type: 'init', continuation: canonicalId };
           } else {
+            sessionId = message.session_id;
             yield { type: 'init', continuation: message.session_id };
           }
         } else if (message.type === 'result') {
@@ -787,6 +845,7 @@ export class ClaudeProvider implements AgentProvider {
           // billing/quota notice to the user rather than dropping the turn.
           const m = message as { result?: string; is_error?: boolean; errors?: string[] };
           const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
+          replyText = text;
           yield { type: 'result', text, isError: m.is_error === true };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };
@@ -810,6 +869,21 @@ export class ClaudeProvider implements AgentProvider {
         }
       }
       log(`Query completed after ${messageCount} SDK messages`);
+
+      // Runs sequentially after the primary call fully drains (not
+      // concurrently with it) — deliberately, since two live processes
+      // resumed against the same session transcript is the exact hazard the
+      // sdk-hang-abort workaround above exists to prevent. The user-facing
+      // reply is already delivered by now (poll-loop reacts to the 'result'
+      // event as it's yielded, above); this only delays how soon poll-loop
+      // considers the turn fully finished, not the reply itself.
+      if (memoryWriterEnabled && !aborted && sessionId && replyText) {
+        try {
+          await runMemoryWriterFollowUp(input.cwd, sessionId, instructions, turnCorrelationId);
+        } catch (err) {
+          log(`memory-writer follow-up failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     }
 
     return {
@@ -861,6 +935,71 @@ export class ClaudeProvider implements AgentProvider {
       },
       // ===== END WORKAROUND: claude-agent-sdk (tag: sdk-hang-abort) =====
     };
+  }
+
+  /**
+   * Post-reply working-memory.md maintenance, run in-container as a second
+   * turn resumed on the same session Lumen just answered in — not a
+   * separate host-side process. Deliberately reuses the exact same
+   * mcpServers/allowedTools/disallowedTools/systemPrompt as her real call
+   * (see query() above): different tool defs would produce a different
+   * request prefix, defeating the whole point of running this here instead
+   * of from the host (see 2026-07-21 discussion — Ollama's implicit prefix
+   * caching needs byte-identical leading tokens, not just "close enough").
+   * Replaces the old host-side src/modules/memory-writer (removed).
+   */
+  private async runMemoryWriterFollowUp(cwd: string, resumeId: string, instructions: string | undefined, correlationId: string): Promise<void> {
+    const workingMemoryPath = path.join(cwd, 'working-memory.md');
+    const prompt = [
+      `Now update the file at ${workingMemoryPath} to reflect your own state after this turn —`,
+      'what you are doing, thinking, discussing, tracking, or letting simmer. Not a project',
+      'tracker or a log of user requests; your own anchor for continuity across turns. Only file',
+      'something if it is actually yours to carry forward.',
+      '',
+      'One overwritten line, then five fixed, capped sections:',
+      '- Focus (1 line, overwritten every turn, no cap): what you are actively engaged with right',
+      '  now, this exchange.',
+      '- Now (max 2): what you are actively working on or thinking through across turns.',
+      '- Open (max 2): questions you are sitting with or blocked on, waiting on the user.',
+      "- Soon (max 2): committed next steps, not yet started.",
+      '- Watch (max 6): things you are keeping half an eye on.',
+      '- Back Burner (max 6): things you are letting simmer — deprioritized, not forgotten.',
+      '',
+      'If a section is at cap, fold the new item into an existing bullet, bump the least-relevant',
+      'item down a tier, or drop it if settled. Never push a section over its cap. If nothing worth',
+      'recording changed, leave the file as is. Edit the file directly; reply with just "done".',
+    ].join('\n');
+
+    const followUpStream = new MessageStream();
+    followUpStream.push(prompt);
+    followUpStream.end();
+
+    const result = sdkQuery({
+      prompt: followUpStream,
+      options: {
+        cwd,
+        additionalDirectories: this.additionalDirectories,
+        resume: resumeId,
+        pathToClaudeCodeExecutable: '/pnpm/claude',
+        systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
+        allowedTools: [...TOOL_ALLOWLIST, ...Object.keys(this.mcpServers).map(mcpAllowPattern)],
+        disallowedTools: SDK_DISALLOWED_TOOLS,
+        env: { ...this.env, ANTHROPIC_CUSTOM_HEADERS: `x-correlation-id: ${correlationId}` },
+        model: this.model,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        effort: this.effort as any,
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        settingSources: ['project', 'user', 'local'],
+        mcpServers: this.mcpServers,
+      },
+    });
+
+    let messageCount = 0;
+    for await (const _message of result) {
+      messageCount++;
+    }
+    log(`memory-writer follow-up completed after ${messageCount} SDK messages`);
   }
 }
 

@@ -26,6 +26,7 @@ import {
   markDelivered,
   markDeliveryFailed,
   migrateDeliveredTable,
+  type OutboundMessage,
 } from './db/session-db.js';
 import { runGuarded, type DeliveryGuardSpec, type GuardedDeliveryHandler } from './delivery-guard.js';
 import { isUnguarded, type Unguarded } from './guard/index.js';
@@ -133,19 +134,20 @@ function notifySessionDbCorrupted(event: SessionDbCorruptedEvent): void {
 /**
  * Fired after a message is successfully delivered (markDelivered succeeded).
  * Used by db-backup to promote a pending snapshot to verified — a completed
- * round-trip is the proof the DB was actually healthy, not just present.
+ * round-trip is the proof the DB was actually healthy, not just present —
+ * and by memory-writer to kick off a post-turn working-memory.md update.
  */
-type MessageDeliveredCallback = (agentGroupId: string, sessionId: string) => void;
+type MessageDeliveredCallback = (agentGroupId: string, sessionId: string, msg: OutboundMessage) => void;
 const messageDeliveredCallbacks: MessageDeliveredCallback[] = [];
 
 export function onMessageDelivered(cb: MessageDeliveredCallback): void {
   messageDeliveredCallbacks.push(cb);
 }
 
-function notifyMessageDelivered(agentGroupId: string, sessionId: string): void {
+function notifyMessageDelivered(agentGroupId: string, sessionId: string, msg: OutboundMessage): void {
   for (const cb of messageDeliveredCallbacks) {
     try {
-      cb(agentGroupId, sessionId);
+      cb(agentGroupId, sessionId, msg);
     } catch (err) {
       log.error('onMessageDelivered callback threw', { err });
     }
@@ -307,7 +309,7 @@ async function drainSession(session: Session): Promise<void> {
         const platformMsgId = await deliverMessage(msg, session, inDb);
         checked(inDb, 'inbound', session, () => markDelivered(inDb, msg.id, platformMsgId ?? null));
         deliveryAttempts.delete(msg.id);
-        notifyMessageDelivered(session.agent_group_id, session.id);
+        notifyMessageDelivered(session.agent_group_id, session.id, msg);
 
         // Pause the typing indicator after a real user-facing message
         // lands on the user's screen, so the client has time to visually

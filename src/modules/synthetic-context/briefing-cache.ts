@@ -20,13 +20,28 @@ import { readEnvFile } from '../../env.js';
 import { log } from '../../log.js';
 import { runBrieferWithWikilinkCache } from '../../memory-briefing/wikilink-cache.js';
 
-const env = readEnvFile(['MBIF_VAULT_PATH']);
+const env = readEnvFile([
+  'MBIF_VAULT_PATH',
+  'MBIF_LIVE_BRIEFER_MODEL',
+  'MBIF_BRIEFER_MODEL',
+  'MBIF_LIVE_BRIEFER_BASE_URL',
+]);
 const VAULT_PATH = process.env.MBIF_VAULT_PATH || env.MBIF_VAULT_PATH;
 
-// Scoped to this purpose only — see docs/synthetic-context.md "Model
-// override, not a permanent change". Does not touch MBIF_BRIEFER_MODEL /
-// MBIF_BRIEFER_BASE_URL, which still govern the on-demand `recall` tool.
-const SYNTHETIC_BRIEFING_OVERRIDES = { model: 'ollama/kimi-k2.6:cloud', baseUrl: 'http://localhost:8787' };
+// MBIF_LIVE_BRIEFER_MODEL > MBIF_BRIEFER_MODEL > sonnet (real Anthropic API,
+// same default as briefer.ts/the vault's briefer.md frontmatter). No baseUrl
+// override unless MBIF_LIVE_BRIEFER_BASE_URL is explicitly set — 2026-07-21
+// surrendered the on-prem/PrefixRouter experiment for this call site;
+// forcing localhost:8787 here regardless of model was the bug that kept
+// routing even a plain "sonnet" request through the proxy hop.
+const LIVE_BRIEFER_MODEL =
+  process.env.MBIF_LIVE_BRIEFER_MODEL ||
+  env.MBIF_LIVE_BRIEFER_MODEL ||
+  process.env.MBIF_BRIEFER_MODEL ||
+  env.MBIF_BRIEFER_MODEL ||
+  'sonnet';
+const LIVE_BRIEFER_BASE_URL = process.env.MBIF_LIVE_BRIEFER_BASE_URL || env.MBIF_LIVE_BRIEFER_BASE_URL;
+const SYNTHETIC_BRIEFING_OVERRIDES = { model: LIVE_BRIEFER_MODEL, baseUrl: LIVE_BRIEFER_BASE_URL };
 
 function synthContextEnabledFor(agentGroupId: string): boolean {
   const config = getContainerConfig(agentGroupId);
@@ -68,14 +83,65 @@ function syncModeEnabledFor(agentGroupId: string): boolean {
   }
 }
 
+// Per-agent-group single-flight state. Concurrent `claude -p` processes
+// against the same vault cwd have been observed to transiently deny each
+// other file reads (2026-07-20 incident: a rapid back-and-forth conversation
+// fired overlapping briefer kickoffs, one of which came back with "vault
+// access denied" mid-run). Since briefing is already one-turn-stale by
+// design, a second concurrent run adds no value anyway — messages that
+// arrive while a run is in flight get batched into the *next* run instead of
+// each spawning their own process.
+interface FlightState {
+  inFlight: boolean;
+  pendingTexts: string[];
+  // Shared by every caller batched into the *next* run — resolved once that
+  // batch completes, so a sync-mode caller that lands mid-flight still waits
+  // for a briefing that covers its own message, instead of falling through
+  // immediately to a stale cache (the bug this replaced: sync mode silently
+  // degraded to one-turn-behind under rapid messaging).
+  pendingPromise: Promise<void> | null;
+  pendingResolve: (() => void) | null;
+}
+const flightState = new Map<string, FlightState>();
+
+function runBriefingCall(agentGroupId: string, cachePath: string, messageText: string): Promise<void> {
+  return runBrieferWithWikilinkCache(VAULT_PATH!, [], messageText, SYNTHETIC_BRIEFING_OVERRIDES, workingMemoryPath())
+    .then((result) => {
+      fs.writeFileSync(cachePath, result.briefing);
+      log.debug('synthetic-context briefing cache updated', { agentGroupId, costUsd: result.costUsd });
+    })
+    .catch((err) => {
+      log.warn('synthetic-context briefing kickoff failed (non-fatal, next turn falls back)', { agentGroupId, err });
+    });
+}
+
+function pumpQueue(agentGroupId: string, cachePath: string): void {
+  const state = flightState.get(agentGroupId);
+  if (!state) return;
+  if (state.pendingTexts.length === 0) {
+    state.inFlight = false;
+    return;
+  }
+  const batched = state.pendingTexts.join('\n\n---\n\n');
+  state.pendingTexts = [];
+  const resolveBatch = state.pendingResolve;
+  state.pendingPromise = null;
+  state.pendingResolve = null;
+  runBriefingCall(agentGroupId, cachePath, batched).then(() => {
+    resolveBatch?.();
+    pumpQueue(agentGroupId, cachePath);
+  });
+}
+
 /**
  * Call on every routed message. No-ops immediately (before touching the
  * filesystem or spawning anything) unless the target agent group has
  * NANOCLAW_SYNTHETIC_CONTEXT enabled — zero cost for every other group.
  * Never throws. Async by default (fire-and-forget, caller doesn't await);
  * if NANOCLAW_SYNTHETIC_CONTEXT_SYNC is set, the returned promise resolves
- * only once the fresh briefing is written, so an awaiting caller blocks the
- * container wake on it.
+ * only once a briefing covering this message has been written — whether
+ * that's a run started just for it, or a batched run it got folded into
+ * because another was already in flight against the same vault.
  */
 export function maybeKickoffBriefing(agentGroupId: string, messageText: string): Promise<void> {
   if (!messageText.trim()) return Promise.resolve();
@@ -85,20 +151,27 @@ export function maybeKickoffBriefing(agentGroupId: string, messageText: string):
   const cachePath = briefingCachePath(agentGroupId);
   if (!cachePath) return Promise.resolve();
 
-  const promise = runBrieferWithWikilinkCache(
-    VAULT_PATH,
-    [],
-    messageText,
-    SYNTHETIC_BRIEFING_OVERRIDES,
-    workingMemoryPath(),
-  )
-    .then((result) => {
-      fs.writeFileSync(cachePath, result.briefing);
-      log.debug('synthetic-context briefing cache updated', { agentGroupId, costUsd: result.costUsd });
-    })
-    .catch((err) => {
-      log.warn('synthetic-context briefing kickoff failed (non-fatal, next turn falls back)', { agentGroupId, err });
-    });
+  let state = flightState.get(agentGroupId);
+  if (!state) {
+    state = { inFlight: false, pendingTexts: [], pendingPromise: null, pendingResolve: null };
+    flightState.set(agentGroupId, state);
+  }
 
+  if (state.inFlight) {
+    state.pendingTexts.push(messageText);
+    if (!state.pendingPromise) {
+      const s = state;
+      s.pendingPromise = new Promise<void>((resolve) => {
+        s.pendingResolve = resolve;
+      });
+    }
+    const pending = state.pendingPromise!;
+    return syncModeEnabledFor(agentGroupId) ? pending : Promise.resolve();
+  }
+
+  state.inFlight = true;
+  const promise = runBriefingCall(agentGroupId, cachePath, messageText).then(() => {
+    pumpQueue(agentGroupId, cachePath);
+  });
   return syncModeEnabledFor(agentGroupId) ? promise : Promise.resolve();
 }

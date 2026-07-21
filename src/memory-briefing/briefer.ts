@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { createInterface } from 'readline';
 
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
@@ -34,10 +35,18 @@ export interface LiteralTurn {
   text: string;
 }
 
+export interface ToolCallSummary {
+  tool: string;
+  detail: string;
+  /** Wall-clock time since the previous stream-json line arrived, ms. */
+  iterationMs: number;
+}
+
 export interface BrieferResult {
   briefing: string;
   costUsd: number;
   durationMs: number;
+  toolCalls: ToolCallSummary[];
 }
 
 /**
@@ -96,6 +105,73 @@ export async function runBriefer(prompt: string, overrides?: BrieferOverrides): 
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function formatToolCall(name: string, input: any, iterationMs: number): ToolCallSummary {
+  switch (name) {
+    case 'Read': {
+      const chunked = input?.offset != null || input?.limit != null;
+      const range = chunked ? ` (offset ${input.offset ?? 0}, limit ${input.limit ?? '?'})` : ' (full file)';
+      return { tool: name, detail: `${input?.file_path ?? '?'}${range}`, iterationMs };
+    }
+    case 'Grep':
+      return {
+        tool: name,
+        detail: `${input?.path ?? '?'} — /${String(input?.pattern ?? '').slice(0, 60)}/`,
+        iterationMs,
+      };
+    case 'Glob':
+      return { tool: name, detail: `${input?.pattern ?? '?'}`, iterationMs };
+    case 'Bash':
+      return { tool: name, detail: String(input?.command ?? '').slice(0, 100), iterationMs };
+    case 'Write':
+      return { tool: name, detail: `${input?.file_path ?? '?'}`, iterationMs };
+    default:
+      return { tool: name, detail: JSON.stringify(input ?? {}).slice(0, 100), iterationMs };
+  }
+}
+
+/**
+ * Parses the `--output-format stream-json --verbose` NDJSON stream: pulls
+ * every tool_use call the run made (so callers can audit *what it actually
+ * read*, e.g. flagging habitual whole-transcript reads — see 2026-07-20
+ * discussion) plus the final `result` event for the briefing text/cost/duration.
+ * `lines` carries the wall-clock time each line was received so each tool
+ * call can be attributed the elapsed time since the prior line (i.e. how
+ * long that iteration's model turn + previous tool result took).
+ */
+function parseStreamJson(lines: { line: string; at: number }[]): {
+  result: Record<string, unknown> | null;
+  toolCalls: ToolCallSummary[];
+} {
+  const toolCalls: ToolCallSummary[] = [];
+  let result: Record<string, unknown> | null = null;
+  let prevAt: number | null = null;
+
+  for (const { line, at } of lines) {
+    if (!line.trim()) continue;
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event.type === 'assistant') {
+      const message = event.message as { content?: Array<Record<string, unknown>> } | undefined;
+      for (const block of message?.content ?? []) {
+        if (block.type === 'tool_use') {
+          const iterationMs = prevAt !== null ? at - prevAt : 0;
+          toolCalls.push(formatToolCall(block.name as string, block.input, iterationMs));
+        }
+      }
+    } else if (event.type === 'result') {
+      result = event;
+    }
+    prevAt = at;
+  }
+
+  return { result, toolCalls };
+}
+
 function runBrieferOnce(prompt: string, overrides?: BrieferOverrides): Promise<BrieferResult> {
   if (!VAULT_PATH) {
     return Promise.reject(new Error('MBIF_VAULT_PATH is not configured'));
@@ -109,7 +185,8 @@ function runBrieferOnce(prompt: string, overrides?: BrieferOverrides): Promise<B
     '--agent',
     'briefer',
     '--output-format',
-    'json',
+    'stream-json',
+    '--verbose',
     '--no-session-persistence',
     ...(model ? ['--model', model] : []),
     prompt,
@@ -124,7 +201,7 @@ function runBrieferOnce(prompt: string, overrides?: BrieferOverrides): Promise<B
   return new Promise<BrieferResult>((resolve, reject) => {
     const proc = spawn('claude', args, { cwd: VAULT_PATH, env: spawnEnv, stdio: ['ignore', 'pipe', 'pipe'] });
 
-    const stdout: Buffer[] = [];
+    const lines: { line: string; at: number }[] = [];
     const stderr: string[] = [];
 
     const timer = setTimeout(() => {
@@ -132,7 +209,8 @@ function runBrieferOnce(prompt: string, overrides?: BrieferOverrides): Promise<B
       reject(new Error(`briefer timed out after ${BRIEFER_TIMEOUT_MS}ms`));
     }, BRIEFER_TIMEOUT_MS);
 
-    proc.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+    const rl = createInterface({ input: proc.stdout });
+    rl.on('line', (line) => lines.push({ line, at: Date.now() }));
     proc.stderr.on('data', (chunk: Buffer) => stderr.push(chunk.toString()));
 
     proc.on('error', (err) => {
@@ -143,21 +221,25 @@ function runBrieferOnce(prompt: string, overrides?: BrieferOverrides): Promise<B
     proc.on('close', (code) => {
       clearTimeout(timer);
       if (code !== 0) {
-        const stdoutText = Buffer.concat(stdout).toString('utf-8');
-        log.warn('briefer exited non-zero', { code, stderr: stderr.join(''), stdout: stdoutText });
-        reject(new Error(`briefer exited with code ${code}: ${stderr.join('') || stdoutText}`));
+        const tail = lines
+          .slice(-20)
+          .map((l) => l.line)
+          .join('\n');
+        log.warn('briefer exited non-zero', { code, stderr: stderr.join(''), stdout: tail });
+        reject(new Error(`briefer exited with code ${code}: ${stderr.join('') || tail}`));
         return;
       }
-      try {
-        const parsed = JSON.parse(Buffer.concat(stdout).toString('utf-8'));
-        resolve({
-          briefing: parsed.result,
-          costUsd: parsed.total_cost_usd ?? 0,
-          durationMs: parsed.duration_ms ?? 0,
-        });
-      } catch (err) {
-        reject(new Error(`briefer produced invalid JSON: ${(err as Error).message}`));
+      const { result, toolCalls } = parseStreamJson(lines);
+      if (!result) {
+        reject(new Error('briefer produced no result event in stream-json output'));
+        return;
       }
+      resolve({
+        briefing: result.result as string,
+        costUsd: (result.total_cost_usd as number) ?? 0,
+        durationMs: (result.duration_ms as number) ?? 0,
+        toolCalls,
+      });
     });
   });
 }

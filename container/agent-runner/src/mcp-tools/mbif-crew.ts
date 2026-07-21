@@ -13,6 +13,7 @@
 import { writeMessageOut } from '../db/messages-out.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
+import { withUsageLog } from './usage-log.js';
 
 function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
@@ -62,4 +63,4 @@ export const promptMbifCrew: McpToolDefinition = {
   },
 };
 
-registerTools([promptMbifCrew]);
+registerTools([promptMbifCrew].map(withUsageLog));
