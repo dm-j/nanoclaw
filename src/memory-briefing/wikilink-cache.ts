@@ -203,24 +203,32 @@ async function lookupCache(vaultPath: string, query: string): Promise<CacheHit |
   }
 }
 
+/** Locates the end of a note's `---\n...\n---\n` frontmatter block, or -1 if there isn't one. */
+function frontmatterEnd(content: string): number {
+  if (!content.startsWith('---\n')) return -1;
+  const closeIdx = content.indexOf('\n---\n', 4);
+  return closeIdx === -1 ? -1 : closeIdx + '\n---\n'.length;
+}
+
 /**
- * Deletes cache notes whose every cited wikilink is now unresolvable — dead
- * weight from notes that got renamed, moved, or deleted since the note was
- * filed. Partial staleness (some links still resolve) is left alone:
- * lookupCache already drops the dead links at read time, so a partially
- * stale note still contributes real signal for whatever survives. Runs on
- * every write since the cache directory is small (one note per Briefer
- * invocation) — revisit with an explicit cadence if that stops being true.
+ * Rewrites each cache note to drop only its individually-unresolvable
+ * wikilinks (renamed, moved, or deleted since the note was filed), keeping
+ * whatever still resolves — a note that's half-stale still has half its
+ * value. A note with nothing left to keep is deleted outright rather than
+ * left as an empty husk. Runs on every write since the cache directory is
+ * small (one note per Briefer invocation) — revisit with an explicit
+ * cadence if that stops being true.
  */
-function pruneStaleCacheEntries(vaultPath: string): number {
+function pruneStaleCacheEntries(vaultPath: string): { trimmed: number; deleted: number } {
   const dir = cacheDir(vaultPath);
   let files: string[];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith('.md'));
   } catch {
-    return 0;
+    return { trimmed: 0, deleted: 0 };
   }
-  let pruned = 0;
+  let trimmed = 0;
+  let deleted = 0;
   for (const file of files) {
     const filePath = path.join(dir, file);
     let content: string;
@@ -231,16 +239,23 @@ function pruneStaleCacheEntries(vaultPath: string): number {
     }
     const links = extractWikilinks(content);
     if (links.length === 0) continue;
-    const anyResolvable = links.some((link) => fs.existsSync(path.join(vaultPath, wikilinkToVaultRelPath(link))));
-    if (anyResolvable) continue;
+    const resolvable = links.filter((link) => fs.existsSync(path.join(vaultPath, wikilinkToVaultRelPath(link))));
+    if (resolvable.length === links.length) continue;
     try {
-      fs.unlinkSync(filePath);
-      pruned++;
+      if (resolvable.length === 0) {
+        fs.unlinkSync(filePath);
+        deleted++;
+      } else {
+        const end = frontmatterEnd(content);
+        const frontmatter = end === -1 ? '' : content.slice(0, end);
+        fs.writeFileSync(filePath, frontmatter + resolvable.map((l) => `- ${l}`).join('\n') + '\n');
+        trimmed++;
+      }
     } catch (err) {
-      log.warn('failed to prune stale wikilink cache note', { file, err });
+      log.warn('failed to prune stale wikilinks from cache note', { file, err });
     }
   }
-  return pruned;
+  return { trimmed, deleted };
 }
 
 /** Best-effort — a cache-write failure should never surface as a Briefer failure. */
@@ -259,8 +274,8 @@ async function writeCacheEntry(vaultPath: string, query: string, links: string[]
     ].join('\n');
     const body = links.map((l) => `- ${l}`).join('\n') + '\n';
     fs.writeFileSync(path.join(dir, `${id}.md`), frontmatter + body);
-    const pruned = pruneStaleCacheEntries(vaultPath);
-    if (pruned > 0) log.info('pruned stale wikilink cache notes', { pruned });
+    const { trimmed, deleted } = pruneStaleCacheEntries(vaultPath);
+    if (trimmed > 0 || deleted > 0) log.info('pruned stale wikilinks from cache', { trimmed, deleted });
     await runMemsearch(['index', dir], vaultPath);
   } catch (err) {
     log.warn('wikilink cache write failed (non-fatal)', { err });
