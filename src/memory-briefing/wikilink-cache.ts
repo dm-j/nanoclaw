@@ -20,6 +20,7 @@ import path from 'path';
 import { BRIEFING_LOG_DIR, TIMEZONE } from '../config.js';
 import { log } from '../log.js';
 import {
+  advanceStep,
   bumpEndorsement,
   CITED_WEIGHT,
   getEffectiveEndorsement,
@@ -355,6 +356,7 @@ export async function runBrieferWithWikilinkCache(
   previousBriefing?: string,
 ): Promise<BrieferResult> {
   const totalStart = Date.now();
+  advanceStep();
   const lookupStart = Date.now();
   const hit = await lookupCache(vaultPath, newMessage);
   const lookupMs = Date.now() - lookupStart;
