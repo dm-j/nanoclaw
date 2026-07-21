@@ -146,6 +146,33 @@ export function countDueMessages(db: Database.Database): number {
   ).count;
 }
 
+/**
+ * Due task rows' prompt text, for feeding into the synthetic-context briefing
+ * kickoff before a task wakes its container — tasks never route through
+ * router.ts (see src/modules/scheduling/db.ts), so they'd otherwise skip
+ * briefing entirely. Chat messages already kick off briefing at insert time
+ * in router.ts, so this is scoped to kind = 'task' only to avoid double-firing.
+ */
+export function getDueTaskPrompts(db: Database.Database): string[] {
+  const rows = db
+    .prepare(
+      `SELECT content FROM messages_in
+       WHERE status = 'pending'
+         AND trigger = 1
+         AND kind = 'task'
+         AND (process_after IS NULL OR datetime(process_after) <= datetime('now'))`,
+    )
+    .all() as Array<{ content: string }>;
+  return rows.flatMap(({ content }) => {
+    try {
+      const parsed = JSON.parse(content) as { prompt?: string };
+      return parsed.prompt ? [parsed.prompt] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
 export function markMessageFailed(db: Database.Database, messageId: string): void {
   db.prepare("UPDATE messages_in SET status = 'failed' WHERE id = ?").run(messageId);
 }

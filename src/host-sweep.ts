@@ -36,6 +36,7 @@ import {
   countDueMessages,
   deleteOrphanProcessingClaims,
   getContainerState,
+  getDueTaskPrompts,
   getMessageForRetry,
   getProcessingClaims,
   markMessageFailed,
@@ -45,6 +46,7 @@ import {
 } from './db/session-db.js';
 import { log } from './log.js';
 import { sendTimeoutRetryCard } from './modules/timeout-retry/index.js';
+import { maybeKickoffBriefing } from './modules/synthetic-context/briefing-cache.js';
 import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
 import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
 import type { Session } from './types.js';
@@ -226,6 +228,13 @@ async function sweepSession(session: Session): Promise<void> {
     let justWoke = false;
     if (dueCount > 0 && !isContainerRunning(session.id)) {
       log.info('Waking container for due messages', { sessionId: session.id, count: dueCount });
+      // Task rows never route through router.ts (see scheduling/db.ts), so
+      // they'd otherwise skip the same briefing kickoff a chat message gets.
+      // Same sync/async semantics as router.ts: must resolve before the wake
+      // when NANOCLAW_SYNTHETIC_CONTEXT_SYNC is set for this group.
+      for (const prompt of getDueTaskPrompts(inDb)) {
+        await maybeKickoffBriefing(agentGroup.id, prompt);
+      }
       // wakeContainer never throws — transient spawn failures (OneCLI down,
       // etc.) return false and leave messages pending for the next tick.
       await wakeContainer(session);
