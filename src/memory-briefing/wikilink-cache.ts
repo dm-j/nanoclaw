@@ -295,7 +295,9 @@ export async function runBrieferWithWikilinkCache(
   const lookupMs = Date.now() - lookupStart;
   if (hit) log.info('wikilink cache hit, folding into prompt', { query: newMessage.slice(0, 80), links: hit.links });
   const hotnessSortedLinks = hit ? [...hit.links].sort((a, b) => hit.hotness[b] - hit.hotness[a]) : [];
-  const basePrompt = buildBrieferPrompt(recentTurns, newMessage, previousBriefing);
+  const workingMemory =
+    workingMemoryPath && fs.existsSync(workingMemoryPath) ? fs.readFileSync(workingMemoryPath, 'utf-8') : null;
+  const basePrompt = buildBrieferPrompt(recentTurns, newMessage, previousBriefing, workingMemory ?? undefined);
   const prompt = hit
     ? `${basePrompt}\n\n## Cached hint (unverified — a similar past query cited these; check, don't assume)\n\n${hotnessSortedLinks.join('\n')}\n`
     : basePrompt;
@@ -311,8 +313,6 @@ export async function runBrieferWithWikilinkCache(
   // — same capped/decaying counter, same ranking pool.
   for (const link of links) bumpEndorsement(normalizeWikilinkTarget(link), CITED_WEIGHT);
 
-  const workingMemory =
-    workingMemoryPath && fs.existsSync(workingMemoryPath) ? fs.readFileSync(workingMemoryPath, 'utf-8') : null;
   const totalMs = Date.now() - totalStart;
   appendBriefingLog(
     newMessage,

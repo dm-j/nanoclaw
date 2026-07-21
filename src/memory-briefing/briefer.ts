@@ -73,12 +73,19 @@ export interface BrieferResult {
  * then the new message clearly separated and last so it reads as the thing
  * to prepare a briefing for, not one more line of history.
  */
-export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: string, previousBriefing?: string): string {
+export function buildBrieferPrompt(
+  recentTurns: LiteralTurn[],
+  newMessage: string,
+  previousBriefing?: string,
+  workingMemory?: string,
+): string {
   const history = recentTurns.length
     ? recentTurns.map((t) => `**${t.role === 'user' ? 'David' : 'Lumen'}:** ${t.text}`).join('\n\n')
     : '_(no recent turns)_';
 
-  const alwaysFiles = readAlwaysFiles().flatMap(({ vaultPath, content }) => [
+  const injectedFiles = readAlwaysFiles();
+  if (workingMemory) injectedFiles.push({ vaultPath: 'Meta/working-memory.md', content: workingMemory });
+  const alwaysFiles = injectedFiles.flatMap(({ vaultPath, content }) => [
     `## Current contents of file (${vaultPath})`,
     '',
     content,
