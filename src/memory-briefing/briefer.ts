@@ -375,6 +375,14 @@ function runBrieferOnce(prompt: string, overrides?: BrieferOverrides, workingMem
     '--output-format',
     'stream-json',
     '--verbose',
+    // Headless -p has no TTY to prompt for approval, so without this every
+    // Edit/Write call (e.g. Briefer updating its own Meta/states/briefer.md
+    // post-it, or working-memory.md) was denied outright rather than
+    // actually asked — confirmed 2026-07-21 via Briefer's own briefing text
+    // reporting the block. protect-system-files.sh (vault .claude/hooks/)
+    // still gates dispatcher/core-agent/skill/reference files regardless.
+    '--permission-mode',
+    'bypassPermissions',
     ...(skeletonSessionId ? ['--resume', skeletonSessionId] : ['--no-session-persistence']),
     ...(model ? ['--model', model] : []),
     prompt,
