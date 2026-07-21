@@ -28,6 +28,7 @@ import { formatLocalStamp } from '../timezone.js';
 import {
   buildBrieferPrompt,
   runBriefer,
+  wikilinkToVaultRelPath,
   type BrieferOverrides,
   type BrieferResult,
   type LiteralTurn,
@@ -176,6 +177,12 @@ async function lookupCache(vaultPath: string, query: string): Promise<CacheHit |
       const text = note.text || note.content || '';
       const similarity = note.score ?? 0;
       for (const link of extractWikilinks(text)) {
+        // Cache notes are scraped from past briefings and can outlive the
+        // notes they cited (renamed, moved, deleted) — a stale link handed
+        // to Briefer as a "hint" wastes a lookup at best and misdirects it
+        // at worst, so drop anything that doesn't resolve to a real file
+        // before it ever reaches ranking/scoring.
+        if (!fs.existsSync(path.join(vaultPath, wikilinkToVaultRelPath(link)))) continue;
         const key = normalizeWikilinkTarget(link);
         const hotness = getEffectiveEndorsement(key);
         const combined = similarity + ENDORSEMENT_WEIGHT * hotness;
@@ -304,7 +311,7 @@ export async function runBrieferWithWikilinkCache(
     : basePrompt;
 
   const briefingStart = Date.now();
-  const result = await runBriefer(prompt, overrides, workingMemory ?? undefined);
+  const result = await runBriefer(prompt, overrides, workingMemory ?? undefined, hotnessSortedLinks[0]);
   const briefingMs = Date.now() - briefingStart;
 
   const links = extractWikilinks(result.briefing);

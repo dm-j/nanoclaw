@@ -65,6 +65,46 @@ function readAlwaysFiles(): InjectedFile[] {
   });
 }
 
+/** Strips `[[...]]`, an `|alias`, and a `#anchor`, preserving case (unlike the
+ * lowercased normalizeWikilinkTarget in wikilink-cache.ts, which is only a
+ * matching key, never a real filesystem path). */
+export function wikilinkToVaultRelPath(raw: string): string {
+  let target = raw.trim();
+  if (target.startsWith('[[') && target.endsWith(']]')) target = target.slice(2, -2);
+  const pipeIdx = target.indexOf('|');
+  if (pipeIdx !== -1) target = target.slice(0, pipeIdx);
+  target = target.trim();
+  const hashIdx = target.indexOf('#');
+  if (hashIdx !== -1) target = target.slice(0, hashIdx).trim();
+  return target.toLowerCase().endsWith('.md') ? target : `${target}.md`;
+}
+
+interface BashHint {
+  command: string;
+  output: string;
+}
+
+/**
+ * The wikilink cache hint gives Briefer a shortlist of past-cited links, but
+ * it's still framed as unverified ("check, don't assume" — see
+ * runBrieferWithWikilinkCache). Faking one real look at the top-ranked link
+ * (via the actual obsidian-readonly command Briefer would run) nudges it
+ * toward treating the hint as worth following up, not just decoration.
+ * `obsidian-readonly` — not `Read` — since that's the tool briefer.md's own
+ * instructions point at for wikilink-driven lookups (see specialist-tools-
+ * readonly.md), so the fake matches what a real cache-hint follow-up would
+ * look like. Best-effort: unresolvable link -> no hint, not an error.
+ */
+function buildCachedWikilinkHint(vaultPath: string, rawWikilink: string): BashHint | null {
+  const relPath = wikilinkToVaultRelPath(rawWikilink);
+  try {
+    const output = fs.readFileSync(path.join(vaultPath, relPath), 'utf-8');
+    return { command: `obsidian-readonly read path=${relPath}`, output };
+  } catch {
+    return null;
+  }
+}
+
 function claudeProjectsDir(): string {
   const base = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude');
   return path.join(base, 'projects');
@@ -87,7 +127,7 @@ function mangleCwd(cwd: string): string {
  * correctness risk, just none of the savings this exists for.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildBrieferSkeletonEntries(files: InjectedFile[]): any[] {
+function buildBrieferSkeletonEntries(files: InjectedFile[], bashHint?: BashHint | null): any[] {
   const now = () => new Date().toISOString();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const entries: any[] = [];
@@ -95,8 +135,9 @@ function buildBrieferSkeletonEntries(files: InjectedFile[]): any[] {
   const common = { userType: 'external', entrypoint: 'sdk-cli', version: '2.1.212', gitBranch: 'HEAD' };
 
   const kickoff =
-    `For this session only: read ${files.map((f) => f.vaultPath).join(', then ')}, ` +
-    'once each, in that order. Read each exactly once. After all reads complete, reply with just "done" and nothing else.';
+    `For this session only: read ${files.map((f) => f.vaultPath).join(', then ')}, once each, in that order` +
+    (bashHint ? `, then run \`${bashHint.command}\` once` : '') +
+    '. Do each step exactly once. After all steps complete, reply with just "done" and nothing else.';
   let prevUuid: string | null = null;
   const userUuid = randomUUID();
   entries.push({
@@ -150,6 +191,43 @@ function buildBrieferSkeletonEntries(files: InjectedFile[]): any[] {
     prevUuid = toolResultUuid;
   }
 
+  if (bashHint) {
+    const callId = `call_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    const assistantUuid = randomUUID();
+    entries.push({
+      parentUuid: prevUuid,
+      isSidechain: false,
+      message: {
+        id: `msg_${randomUUID().replace(/-/g, '')}`,
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: callId, name: 'Bash', input: { command: bashHint.command } }],
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+      type: 'assistant',
+      uuid: assistantUuid,
+      timestamp: now(),
+      ...common,
+    });
+    const toolResultUuid = randomUUID();
+    entries.push({
+      parentUuid: assistantUuid,
+      isSidechain: false,
+      promptId,
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ tool_use_id: callId, type: 'tool_result', content: [{ type: 'text', text: bashHint.output }] }],
+      },
+      uuid: toolResultUuid,
+      timestamp: now(),
+      toolUseResult: [{ type: 'text', text: bashHint.output }],
+      sourceToolAssistantUUID: assistantUuid,
+      ...common,
+    });
+    prevUuid = toolResultUuid;
+  }
+
   entries.push({
     parentUuid: prevUuid,
     isSidechain: false,
@@ -171,9 +249,13 @@ function buildBrieferSkeletonEntries(files: InjectedFile[]): any[] {
 }
 
 /** Writes the skeleton to the project dir the CLI checks on `--resume`, returning the session id to resume. */
-function buildBrieferSkeletonSession(vaultPath: string, files: InjectedFile[]): string | null {
-  if (files.length === 0) return null;
-  const entries = buildBrieferSkeletonEntries(files);
+function buildBrieferSkeletonSession(
+  vaultPath: string,
+  files: InjectedFile[],
+  bashHint?: BashHint | null,
+): string | null {
+  if (files.length === 0 && !bashHint) return null;
+  const entries = buildBrieferSkeletonEntries(files, bashHint);
   const ephemeralId = randomUUID();
   for (const e of entries) {
     e.cwd = vaultPath;
@@ -263,7 +345,10 @@ export interface BrieferOverrides {
  * markdown from the agent's `result` field. `workingMemory`, if given, joins
  * briefer.md/user-profile.md as a third fake pre-completed Read (see
  * buildBrieferSkeletonSession) — passed separately from the prompt since it's
- * per-call content, not a static vault file.
+ * per-call content, not a static vault file. `firstCachedWikilink`, if given
+ * (the top-ranked link from a wikilink cache hit), becomes a fourth skeleton
+ * step: a fake completed `obsidian-readonly read` on that link, nudging
+ * Briefer to actually follow the cache hint rather than just note it.
  *
  * Retries once on a non-timeout failure, as cheap insurance against any
  * remaining transient failure (network blip, etc).
@@ -272,14 +357,15 @@ export async function runBriefer(
   prompt: string,
   overrides?: BrieferOverrides,
   workingMemory?: string,
+  firstCachedWikilink?: string,
 ): Promise<BrieferResult> {
   try {
-    return await runBrieferOnce(prompt, overrides, workingMemory);
+    return await runBrieferOnce(prompt, overrides, workingMemory, firstCachedWikilink);
   } catch (err) {
     if ((err as Error).message.includes('timed out')) throw err;
     log.warn('briefer failed, retrying once', { err });
     await new Promise((r) => setTimeout(r, 1500));
-    return runBrieferOnce(prompt, overrides, workingMemory);
+    return runBrieferOnce(prompt, overrides, workingMemory, firstCachedWikilink);
   }
 }
 
@@ -350,7 +436,12 @@ function parseStreamJson(lines: { line: string; at: number }[]): {
   return { result, toolCalls };
 }
 
-function runBrieferOnce(prompt: string, overrides?: BrieferOverrides, workingMemory?: string): Promise<BrieferResult> {
+function runBrieferOnce(
+  prompt: string,
+  overrides?: BrieferOverrides,
+  workingMemory?: string,
+  firstCachedWikilink?: string,
+): Promise<BrieferResult> {
   if (!VAULT_PATH) {
     return Promise.reject(new Error('MBIF_VAULT_PATH is not configured'));
   }
@@ -366,7 +457,8 @@ function runBrieferOnce(prompt: string, overrides?: BrieferOverrides, workingMem
       content: workingMemory,
     });
   }
-  const skeletonSessionId = buildBrieferSkeletonSession(VAULT_PATH, injectedFiles);
+  const bashHint = firstCachedWikilink ? buildCachedWikilinkHint(VAULT_PATH, firstCachedWikilink) : null;
+  const skeletonSessionId = buildBrieferSkeletonSession(VAULT_PATH, injectedFiles, bashHint);
 
   const args = [
     '-p',
