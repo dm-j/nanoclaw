@@ -297,13 +297,13 @@ export async function runBrieferWithWikilinkCache(
   const hotnessSortedLinks = hit ? [...hit.links].sort((a, b) => hit.hotness[b] - hit.hotness[a]) : [];
   const workingMemory =
     workingMemoryPath && fs.existsSync(workingMemoryPath) ? fs.readFileSync(workingMemoryPath, 'utf-8') : null;
-  const basePrompt = buildBrieferPrompt(recentTurns, newMessage, previousBriefing, workingMemory ?? undefined);
+  const basePrompt = buildBrieferPrompt(recentTurns, newMessage, previousBriefing);
   const prompt = hit
     ? `${basePrompt}\n\n## Cached hint (unverified — a similar past query cited these; check, don't assume)\n\n${hotnessSortedLinks.join('\n')}\n`
     : basePrompt;
 
   const briefingStart = Date.now();
-  const result = await runBriefer(prompt, overrides);
+  const result = await runBriefer(prompt, overrides, workingMemory ?? undefined);
   const briefingMs = Date.now() - briefingStart;
 
   const links = extractWikilinks(result.briefing);
