@@ -1,20 +1,17 @@
+Focus:
 Last updated:
 
-## Now
+## Now (max 2 items)
 -
 
-## Open
--
--
-
-## Soon
--
+## Open (max 2 items)
 -
 
-## Watch
--
+## Soon (max 2 items)
 -
 
-## Back-Burner
+## Watch (max 6 items)
 -
+
+## Back Burner (max 6 items)
 -
