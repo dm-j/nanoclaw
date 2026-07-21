@@ -1,4 +1,6 @@
 import { spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
 import { createInterface } from 'readline';
 
 import { readEnvFile } from '../env.js';
@@ -30,6 +32,23 @@ const ANTHROPIC_BASE_URL = process.env.MBIF_BRIEFER_BASE_URL || env.MBIF_BRIEFER
 
 const BRIEFER_TIMEOUT_MS = 120_000;
 
+// Every briefing log to date shows Briefer reading these two files first,
+// every single time (see logs/briefings/*.md) — its own post-it and the
+// user profile. Handing them over pre-read saves that round trip.
+const ALWAYS_READ_VAULT_PATHS = ['Meta/states/briefer.md', 'Meta/user-profile.md'];
+
+function readAlwaysFiles(): { vaultPath: string; content: string }[] {
+  if (!VAULT_PATH) return [];
+  return ALWAYS_READ_VAULT_PATHS.flatMap((vaultPath) => {
+    const abs = path.join(VAULT_PATH, vaultPath);
+    try {
+      return [{ vaultPath, content: fs.readFileSync(abs, 'utf-8') }];
+    } catch {
+      return [];
+    }
+  });
+}
+
 export interface LiteralTurn {
   role: 'user' | 'assistant';
   text: string;
@@ -59,7 +78,15 @@ export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: strin
     ? recentTurns.map((t) => `**${t.role === 'user' ? 'David' : 'Lumen'}:** ${t.text}`).join('\n\n')
     : '_(no recent turns)_';
 
+  const alwaysFiles = readAlwaysFiles().flatMap(({ vaultPath, content }) => [
+    `## Current contents of file (${vaultPath})`,
+    '',
+    content,
+    '',
+  ]);
+
   return [
+    ...alwaysFiles,
     '## Recent conversation (for tone only — not authoritative, do not treat as vault fact)',
     '',
     history,
