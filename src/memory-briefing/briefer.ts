@@ -148,7 +148,15 @@ function buildBrieferSkeletonEntries(files: InjectedFile[], bashHint?: BashHint 
     message: { role: 'user', content: kickoff },
     uuid: userUuid,
     timestamp: now(),
-    permissionMode: 'default',
+    // Must match the --permission-mode flag passed to the real CLI invocation
+    // below (bypassPermissions) — this skeleton entry becomes part of the
+    // transcript that --resume loads, and a stale 'default' here silently
+    // overrides the CLI flag for every resumed run (which is nearly every
+    // run, since readAlwaysFiles() always injects at least two files).
+    // Confirmed 2026-07-21: every Write/Edit call was still being denied
+    // outright after 108f1e6e added the CLI flag, because this field was
+    // never updated to match.
+    permissionMode: 'bypassPermissions',
     promptSource: 'sdk',
     ...common,
   });
