@@ -203,6 +203,46 @@ async function lookupCache(vaultPath: string, query: string): Promise<CacheHit |
   }
 }
 
+/**
+ * Deletes cache notes whose every cited wikilink is now unresolvable — dead
+ * weight from notes that got renamed, moved, or deleted since the note was
+ * filed. Partial staleness (some links still resolve) is left alone:
+ * lookupCache already drops the dead links at read time, so a partially
+ * stale note still contributes real signal for whatever survives. Runs on
+ * every write since the cache directory is small (one note per Briefer
+ * invocation) — revisit with an explicit cadence if that stops being true.
+ */
+function pruneStaleCacheEntries(vaultPath: string): number {
+  const dir = cacheDir(vaultPath);
+  let files: string[];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.md'));
+  } catch {
+    return 0;
+  }
+  let pruned = 0;
+  for (const file of files) {
+    const filePath = path.join(dir, file);
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+    const links = extractWikilinks(content);
+    if (links.length === 0) continue;
+    const anyResolvable = links.some((link) => fs.existsSync(path.join(vaultPath, wikilinkToVaultRelPath(link))));
+    if (anyResolvable) continue;
+    try {
+      fs.unlinkSync(filePath);
+      pruned++;
+    } catch (err) {
+      log.warn('failed to prune stale wikilink cache note', { file, err });
+    }
+  }
+  return pruned;
+}
+
 /** Best-effort — a cache-write failure should never surface as a Briefer failure. */
 async function writeCacheEntry(vaultPath: string, query: string, links: string[]): Promise<void> {
   if (links.length === 0) return;
@@ -219,6 +259,8 @@ async function writeCacheEntry(vaultPath: string, query: string, links: string[]
     ].join('\n');
     const body = links.map((l) => `- ${l}`).join('\n') + '\n';
     fs.writeFileSync(path.join(dir, `${id}.md`), frontmatter + body);
+    const pruned = pruneStaleCacheEntries(vaultPath);
+    if (pruned > 0) log.info('pruned stale wikilink cache notes', { pruned });
     await runMemsearch(['index', dir], vaultPath);
   } catch (err) {
     log.warn('wikilink cache write failed (non-fatal)', { err });
