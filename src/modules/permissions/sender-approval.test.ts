@@ -34,6 +34,7 @@ vi.mock('../../delivery.js', () => ({
   getDeliveryAdapter: () => ({
     deliver: deliverMock,
   }),
+  registerDeliveryAction: vi.fn(),
 }));
 
 // Mock ensureUserDm to return the approver's existing messaging group
