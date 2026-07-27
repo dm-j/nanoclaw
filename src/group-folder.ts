@@ -1,8 +1,6 @@
-import fs from 'fs';
 import path from 'path';
 
-import { GROUPS_DIR, TIMEZONE } from './config.js';
-import { isValidTimezone } from './timezone.js';
+import { GROUPS_DIR } from './config.js';
 
 const GROUP_FOLDER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const RESERVED_FOLDERS = new Set(['global']);
@@ -35,29 +33,4 @@ export function resolveGroupFolderPath(folder: string): string {
   const groupPath = path.resolve(GROUPS_DIR, folder);
   ensureWithinBase(GROUPS_DIR, groupPath);
   return groupPath;
-}
-
-/**
- * A group's effective timezone: its `.timezone` override file if present and
- * valid (the agent's own live/travel override, see `setlocaltimezone`), else
- * the group's DB-configured `container_configs.timezone` (see
- * `resolveGroupTimezone` in container-config.ts — pass the DB value in as
- * `dbTimezone` if the caller has it), else the global config TIMEZONE.
- * Single source of truth for both the container's own TZ env
- * (container-runner.ts) and host-side scheduling (recurrence.ts) — they must
- * agree, or a task scheduled "3am" per the group's override fires at 3am UTC
- * instead.
- */
-export function resolveGroupTimezone(folder: string, dbTimezone?: string | null): string {
-  try {
-    const raw = fs.readFileSync(path.join(GROUPS_DIR, folder, '.timezone'), 'utf-8').trim();
-    // An invalid override falls back the same way a missing file does — not
-    // timezone.ts's hardcoded 'UTC' fallback, which would silently diverge
-    // from every other unaffected group.
-    if (raw && isValidTimezone(raw)) return raw;
-  } catch {
-    // no per-group override — fall through to the DB value, then global
-  }
-  if (dbTimezone && isValidTimezone(dbTimezone)) return dbTimezone;
-  return TIMEZONE;
 }

@@ -21,7 +21,7 @@ import {
   DATA_DIR,
   GROUPS_DIR,
 } from './config.js';
-import { materializeContainerJson } from './container-config.js';
+import { materializeContainerJson, resolveGroupTimezone } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
 import {
@@ -32,7 +32,6 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
-import { resolveGroupTimezone } from './group-folder.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
@@ -176,17 +175,17 @@ const activeContainers = new Map<string, { process: ChildProcess; containerName:
 /**
  * Heightened container-log capture, gated by HEIGHTENED_LOG_UNTIL (a plain
  * YYYY-MM-DD date, compared as calendar days in the *group's* timezone —
- * resolveGroupTimezone's `.timezone` override, not the host OS clock, since
+ * resolveGroupTimezone's DB-configured override, not the host OS clock, since
  * the two can diverge (e.g. the user has Lumen change her tracked timezone
  * without touching the host's). Not parsed as a UTC instant either, which
  * would flip off at a random hour depending on the offset. Off if the env
  * var is missing, malformed, or today is on or after it — so this
  * self-disarms without a follow-up deploy.
  */
-function heightenedLoggingActive(groupFolder: string): boolean {
+function heightenedLoggingActive(agentGroupId: string): boolean {
   const raw = process.env.HEIGHTENED_LOG_UNTIL;
   if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return false;
-  const todayLocal = new Date().toLocaleDateString('en-CA', { timeZone: resolveGroupTimezone(groupFolder) });
+  const todayLocal = new Date().toLocaleDateString('en-CA', { timeZone: resolveGroupTimezone(agentGroupId) });
   return todayLocal < raw;
 }
 
@@ -339,7 +338,7 @@ async function spawnContainer(session: Session): Promise<void> {
   // recurrence, not a permanent feature — checked once per spawn, so a
   // changed/expired HEIGHTENED_LOG_UNTIL only takes effect on the next
   // container spawn. Delete this block once the investigation is done.
-  const heightened = heightenedLoggingActive(agentGroup.folder);
+  const heightened = heightenedLoggingActive(agentGroup.id);
 
   // Log stderr. A container that dies at boot (unknown provider, missing
   // binary, bad config) explains itself only here — and debug is below the
@@ -680,12 +679,11 @@ async function buildContainerArgs(
 
   // Environment — only vars read by code we don't own.
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
-  // Per-group timezone: the agent's own .timezone file override (to handle
-  // travel) wins, then the DB-configured containerConfig.timezone
-  // (`ncl groups config update --timezone`), then the global default.
+  // Per-group timezone: DB-configured containerConfig.timezone
+  // (`ncl groups config update --timezone`), else the global default.
   // Shared with host-side scheduling (recurrence.ts) via resolveGroupTimezone
   // so a cron fired "3am" per this override doesn't fire 3am UTC instead.
-  args.push('-e', `TZ=${resolveGroupTimezone(agentGroup.folder, containerConfig.timezone)}`);
+  args.push('-e', `TZ=${resolveGroupTimezone(agentGroup.id)}`);
 
   // Service token: lets the host services proxy identify this container even
   // when Docker Desktop NATs the connection to 127.0.0.1. Never logged.

@@ -35,7 +35,7 @@ console.log(`Result: ${args[0]}`);
 
 ## Environment
 
-- `TZ` — the agent's timezone (from `.timezone` file)
+- `TZ` — the agent's timezone (DB-configured `container_configs.timezone`, set via `setlocaltimezone`/`ncl groups config update --timezone`)
 - `MEMSEARCH_DIR` — path to the agent's memsearch memory directory
 - Standard container env (HOME, PATH, etc.)
 
