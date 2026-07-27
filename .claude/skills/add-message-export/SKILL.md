@@ -12,6 +12,8 @@ After every completed turn, the Stop hook:
 
 Inbox files are transient (MBIF removes them after filing). Session logs accumulate across the life of a container and are the stable input for custom compaction.
 
+**Downstream consumer:** `inbox/`'s per-turn files are also the sole input to the vault-side `assemble-transcript` script (installed by `add-vault-transcript-pipeline`), which assembles them into `07-Daily/Transcripts-readonly/` for the vault's `digester` agent. See [docs/vault-memory-pipeline.md](../../../docs/vault-memory-pipeline.md) for the full loop before changing this skill's output format.
+
 ## File formats
 
 **Inbox file** (`inbox/2026-06-29T143201Z-david.md`):

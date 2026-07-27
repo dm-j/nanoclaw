@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Assemble one day's raw NanoClaw inbox turns into a dated transcript file
+# under 07-Daily/Transcripts-readonly/, with the frontmatter the digester agent expects.
+# Source of truth: the add-message-export Stop hook's per-turn inbox/ files —
+# never modified, only read.
+#
+# Each turn is rendered as a blockquote (header inside the quote, content
+# lines quoted including blanks) with a trailing Obsidian block ID, so a
+# turn is wikilink/block-reference addressable without a Markdown heading.
+#
+# Usage: assemble-transcript YYYY-MM-DD [YYYY-MM-DD ...]
+#   assemble-transcript 2026-06-23
+#   assemble-transcript 2026-06-23 2026-06-24 2026-06-25   # one file per date
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VAULT_DIR="${VAULT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+INBOX_DIR="/Users/lumen/Projects/nanoclaw/groups/dm-with-dmj/inbox"
+DEST_DIR="$VAULT_DIR/07-Daily/Transcripts-readonly"
+USER_TIMEZONE="${USER_TIMEZONE:-America/Chicago}"
+
+# Convert a UTC "YYYY-MM-DDTHH:MM:SSZ" inbox timestamp to local "YYYY-MM-DDTHH:MM:SS±HH:MM".
+to_local_ts() {
+  local utc_ts="$1"
+  local epoch
+  epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$utc_ts" "+%s")
+  TZ="$USER_TIMEZONE" date -j -f "%s" "$epoch" "+%Y-%m-%dT%H:%M:%S%z" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/'
+}
+
+# Slug for a block ID: lowercase, spaces->hyphens, strip anything else unsafe.
+slugify() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | tr -s ' ' '-' | tr -cd 'a-z0-9-'
+}
+
+# "2026-07-23T02:52:32-05:00" -> "20260723t025232-0500"
+compact_ts() {
+  echo "$1" | tr -d ':' | sed -E 's/^([0-9]{4})-([0-9]{2})-([0-9]{2})/\1\2\3/' | tr 'T' 't'
+}
+
+if [ "$#" -eq 0 ]; then
+  echo "Usage: assemble-transcript YYYY-MM-DD [YYYY-MM-DD ...]" >&2
+  exit 1
+fi
+
+for date in "$@"; do
+  compact="${date//-/}"
+  yyyy="${date:0:4}"
+  mm="${date:5:2}"
+  dd="${date:8:2}"
+  dest="$DEST_DIR/${yyyy}/${mm}/${dd}.md"
+
+  # Inbox filenames carry UTC timestamps, but a transcript file is for one
+  # *local* calendar day. At a negative UTC offset, local evening turns
+  # already roll into tomorrow's UTC date (and the reverse at a positive
+  # offset), so glob the adjacent UTC day too and filter by local date below
+  # — matching on filename prefix alone misfiles those turns.
+  prev_compact=$(date -j -v-1d -f "%Y-%m-%d" "$date" "+%Y%m%d")
+  next_compact=$(date -j -v+1d -f "%Y-%m-%d" "$date" "+%Y%m%d")
+  shopt -s nullglob
+  candidates=("$INBOX_DIR/${prev_compact}"T*.md "$INBOX_DIR/${compact}"T*.md "$INBOX_DIR/${next_compact}"T*.md)
+  shopt -u nullglob
+
+  files=()
+  for f in "${candidates[@]}"; do
+    ts=$(grep '^timestamp:' "$f" | head -1 | sed 's/timestamp: *//')
+    local_ts=$(to_local_ts "$ts")
+    if [ "${local_ts:0:10}" = "$date" ]; then
+      files+=("$f")
+    fi
+  done
+
+  if [ "${#files[@]}" -eq 0 ]; then
+    echo "No inbox turns found for $date — skipping" >&2
+    continue
+  fi
+
+  mkdir -p "$(dirname "$dest")"
+
+  {
+    echo "---"
+    echo "type: transcript"
+    echo "date: \"${date}\""
+    echo "tags: [transcript]"
+    echo "---"
+    echo
+    echo "# Transcript — ${date}"
+    echo
+
+    for f in $(printf '%s\n' "${files[@]}" | sort); do
+      ts=$(grep '^timestamp:' "$f" | head -1 | sed 's/timestamp: *//')
+      speaker=$(grep '^display_name:' "$f" | head -1 | sed 's/display_name: *//')
+      local_ts=$(to_local_ts "$ts")
+
+      echo "> **${speaker} — ${local_ts}**"
+
+      # Unwrap XML-ish tags (keep <tag>content</tag> content, drop
+      # self-closing <tag .../> entirely), then squeeze 3+ newlines
+      # down to a single blank line, then quote every line.
+      awk 'BEGIN{c=0} /^---$/{c++; next} c>=2{print}' "$f" \
+        | perl -0777 -pe '
+            s/<[a-zA-Z][a-zA-Z0-9_-]*(?:[^<>]*?)\/>//gs;
+            s/<[a-zA-Z][a-zA-Z0-9_-]*(?:[^<>]*?)>//gs;
+            s/<\/[a-zA-Z][a-zA-Z0-9_-]*>//gs;
+            s/^\n+//; s/\n+$//;
+            s/\n{3,}/\n\n/g;
+          ' \
+        | perl -pe 's/^$/>/ or s/^/> /'
+      echo  # perl drops the trailing newline when the body doesn't end in one — restore it
+
+      echo
+      echo "^$(slugify "$speaker")-$(compact_ts "$local_ts")"
+      echo
+    done
+  } > "$dest"
+
+  echo "Wrote $dest ($(printf '%s\n' "${files[@]}" | wc -l | tr -d ' ') turns)"
+done

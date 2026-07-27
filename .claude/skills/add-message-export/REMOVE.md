@@ -2,6 +2,8 @@
 
 Idempotent — safe to run even if some steps were never applied.
 
+**Check for a downstream consumer first.** If `add-vault-transcript-pipeline` is applied, its vault-side `assemble-transcript` script reads this skill's `inbox/` output as its sole source of truth (see [docs/vault-memory-pipeline.md](../../../docs/vault-memory-pipeline.md)). Removing this skill without also removing or updating that pipeline leaves it silently assembling empty transcripts.
+
 ## 1. Remove the Stop hook
 
 ```bash

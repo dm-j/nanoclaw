@@ -1,0 +1,97 @@
+#!/usr/bin/env node
+// Deterministically reshape a memsearch daily memory file into the same
+// transcript format assemble-transcript produces, for days where the raw
+// inbox/ export is missing (e.g. the export-turn.js outage). NOT a literal
+// transcript -- memsearch stores paraphrased/truncated session captures, not
+// verbatim turns. Frontmatter marks this explicitly so digester and readers
+// don't mistake it for ground truth.
+//
+// Usage: memsearch-to-transcript YYYY-MM-DD [YYYY-MM-DD ...] [--force]
+'use strict';
+const fs = require('fs');
+const path = require('path');
+
+const MEMSEARCH_DIR = '/Users/lumen/Projects/nanoclaw/groups/dm-with-dmj/.memsearch/memory';
+const SCRIPT_DIR = __dirname;
+const VAULT_DIR = process.env.VAULT_ROOT && process.env.VAULT_ROOT.trim()
+  ? process.env.VAULT_ROOT
+  : path.resolve(SCRIPT_DIR, '..', '..');
+const DEST_DIR = path.join(VAULT_DIR, '07-Daily', 'Transcripts-readonly');
+
+const args = process.argv.slice(2);
+const force = args.includes('--force');
+const dates = args.filter((a) => a !== '--force');
+
+if (dates.length === 0) {
+  console.error('Usage: memsearch-to-transcript YYYY-MM-DD [YYYY-MM-DD ...] [--force]');
+  process.exit(1);
+}
+
+const SESSION_RE = /^## Session (\d{2}:\d{2})\s*$/;
+const TURN_RE = /^- (User|Lumen): (.*)$/;
+const SPEAKER_NAME = { User: 'David', Lumen: 'Lumen' };
+
+function parseMemsearchFile(text) {
+  const lines = text.split('\n');
+  let currentTime = null;
+  const turns = [];
+  for (const line of lines) {
+    const sMatch = line.match(SESSION_RE);
+    if (sMatch) {
+      currentTime = sMatch[1];
+      continue;
+    }
+    const tMatch = line.match(TURN_RE);
+    if (tMatch && currentTime) {
+      turns.push({ time: currentTime, speaker: tMatch[1], text: tMatch[2].trim() });
+    }
+    // Anything else (blank lines, standalone `remember`-tool fact bullets not
+    // in "- User:"/"- Lumen:" form) is not a conversational turn -- skip it.
+    // That content still lives in the memsearch file itself; it's just not
+    // part of the reconstructed dialogue transcript.
+  }
+  return turns;
+}
+
+fs.mkdirSync(DEST_DIR, { recursive: true });
+
+for (const date of dates) {
+  const srcPath = path.join(MEMSEARCH_DIR, `${date}.md`);
+  const destPath = path.join(DEST_DIR, `${date}.md`);
+
+  if (!fs.existsSync(srcPath)) {
+    console.error(`No memsearch memory file for ${date} — skipping`);
+    continue;
+  }
+  if (fs.existsSync(destPath) && !force) {
+    console.error(`${destPath} already exists — skipping (pass --force to overwrite)`);
+    continue;
+  }
+
+  const turns = parseMemsearchFile(fs.readFileSync(srcPath, 'utf8'));
+  if (turns.length === 0) {
+    console.error(`No session dialogue found in ${date}.md (only standalone facts, or empty) — skipping`);
+    continue;
+  }
+
+  const body = turns
+    .map((t) => `## ${date}T${t.time}:00Z · ${SPEAKER_NAME[t.speaker]}\n\n${t.text}\n`)
+    .join('\n');
+
+  const frontmatter = [
+    '---',
+    'type: transcript',
+    `date: "${date}"`,
+    'tags: [transcript, synthetic]',
+    'source: memsearch',
+    'note: "Reconstructed from memsearch daily memory capture, not the raw literal transcript (inbox/ export was down this day). Content may be paraphrased or truncated -- memsearch stores summarized/preview snippets, not verbatim turns. Treat with more caution than an inbox-derived transcript."',
+    '---',
+    '',
+    `# Transcript — ${date} (synthetic, memsearch-derived)`,
+    '',
+    '',
+  ].join('\n');
+
+  fs.writeFileSync(destPath, frontmatter + body);
+  console.log(`Wrote ${destPath} (${turns.length} turns, synthetic/memsearch-derived)`);
+}
