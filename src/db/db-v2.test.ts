@@ -465,7 +465,9 @@ describe('container configs', () => {
       packages_apt: '[]',
       packages_npm: '[]',
       additional_mounts: '[]',
+      env: '{}',
       cli_scope: 'global',
+      context_window: null,
       timezone: null,
       updated_at: now(),
     });

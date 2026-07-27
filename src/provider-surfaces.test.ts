@@ -27,7 +27,6 @@ import { closeDb, createAgentGroup, initTestDb, runMigrations } from './db/index
 import { ensureContainerConfig } from './db/container-configs.js';
 import { initGroupFilesystem } from './group-init.js';
 import { PERSONA_PREPEND_FILE } from './group-persona.js';
-import { log } from './log.js';
 import { registerProviderContainerConfig } from './providers/provider-container-registry.js';
 import type { ContainerConfig } from './container-config.js';
 import type { AgentGroup, Session } from './types.js';
@@ -75,43 +74,20 @@ describe('initGroupFilesystem agent surfaces', () => {
     expect(fs.existsSync(path.join(claudeDir, 'settings.json'))).toBe(true);
     expect(fs.existsSync(path.join(claudeDir, 'skills'))).toBe(true);
     const settings = JSON.parse(fs.readFileSync(path.join(claudeDir, 'settings.json'), 'utf-8'));
-    expect(settings.autoMemoryEnabled).toBe(false);
-    expect(settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
-    expect(settings.hooks.SessionStart).toBeUndefined();
-  });
-
-  it('disables native Claude memory in existing settings without clobbering other values', () => {
-    const ag = group('ag-existing-claude', 'existing-claude-group');
-    createAgentGroup(ag);
-    initGroupFilesystem(ag);
-
-    const settingsFile = path.join(DATA_DIR, 'v2-sessions', ag.id, '.claude-shared', 'settings.json');
-    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
-    settings.autoMemoryEnabled = true;
-    settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '0';
-    settings.customValue = 'preserved';
-    settings.hooks.SessionStart = [
-      { matcher: 'resume', hooks: [{ type: 'command', command: 'custom-resume' }] },
-      { matcher: '.*', hooks: [{ type: 'command', command: 'bun /app/src/memory-hook.ts' }] },
-    ];
-    fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
-
-    initGroupFilesystem(ag);
-
-    const reconciled = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
-    expect(reconciled.autoMemoryEnabled).toBe(false);
-    expect(reconciled.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
-    expect(reconciled.customValue).toBe('preserved');
-    expect(reconciled.hooks.SessionStart).toEqual([
-      { matcher: 'resume', hooks: [{ type: 'command', command: 'custom-resume' }] },
-    ]);
-    expect(JSON.stringify(reconciled.hooks.PreCompact)).toContain('compact-instructions.ts');
+    // NOTE: upstream's provider-agnostic memory scaffold (autoMemoryEnabled: false,
+    // CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', migrateClaudeMemorySettings reconciliation)
+    // is deliberately not wired into this fork's group-init.ts — see
+    // docs/memory-decision-upstream-declined.md. This asserts our own actual
+    // defaults instead of upstream's.
+    expect(settings.autoMemoryEnabled).toBeUndefined();
+    expect(settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('0');
+    expect(settings.env.MEMSEARCH_DIR).toBe('/workspace/agent/.memsearch');
   });
 
   it.each([
     ['malformed JSON', '{"hooks":'],
     ['a non-object root', '[]\n'],
-  ])('warns and leaves existing settings unchanged for %s', (_label, content) => {
+  ])('leaves existing settings unchanged for %s', (_label, content) => {
     const ag = group('ag-invalid-claude', 'invalid-claude-group');
     createAgentGroup(ag);
     initGroupFilesystem(ag);
@@ -121,11 +97,10 @@ describe('initGroupFilesystem agent surfaces', () => {
 
     initGroupFilesystem(ag);
 
+    // This fork's ensureMemsearchHooks/ensureRtkHook (unlike upstream's
+    // migrateClaudeMemorySettings, which this fork doesn't call — see above)
+    // silently no-op on a malformed settings.json rather than logging a warning.
     expect(fs.readFileSync(settingsFile, 'utf-8')).toBe(content);
-    expect(log.warn).toHaveBeenCalledWith(
-      expect.stringContaining('Claude settings'),
-      expect.objectContaining({ settingsFile }),
-    );
   });
 
   it('stages the same provider-neutral instructions for a provider with its own surfaces', () => {
