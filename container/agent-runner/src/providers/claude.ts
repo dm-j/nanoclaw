@@ -789,7 +789,10 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   query(input: QueryInput): AgentQuery {
-    if (!this.memorySessionHook) throw new Error('Claude memory session hook was not registered');
+    // NOTE: upstream requires registerMemorySessionHook() to have been called
+    // before any query, throwing otherwise — but this fork deliberately never
+    // calls it (see index.ts's NOTE and docs/memory-decision-upstream-declined.md).
+    // `this.memorySessionHook` staying unset here is expected, not an error.
     const stream = new MessageStream();
     stream.push(input.prompt);
 

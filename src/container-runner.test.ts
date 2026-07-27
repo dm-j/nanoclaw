@@ -194,25 +194,20 @@ describe('syncSkillSymlinks blocked-entry warning (structural)', () => {
 });
 
 describe('hardeningArgs', () => {
-  it('always emits the three unconditional flags', () => {
+  // Apple Container's `container run` (this fork's runtime) doesn't support
+  // `--security-opt` or `--pids-limit` — passing either fails the spawn
+  // immediately with "Unknown option", crash-looping every container
+  // (confirmed in production 2026-07-27). Only flags Apple Container's own
+  // `--help` confirms are emitted; pidsLimit is accepted but intentionally
+  // unused.
+  it('emits only the flags Apple Container actually supports', () => {
     const args = hardeningArgs('2048');
-    expect(args).toContain('--cap-drop=ALL');
-    expect(args.join(' ')).toContain('--security-opt no-new-privileges');
-    expect(args).toContain('--init');
+    expect(args).toEqual(['--cap-drop=ALL', '--init']);
   });
 
-  it('emits the pids limit when positive', () => {
-    expect(hardeningArgs('2048').join(' ')).toContain('--pids-limit 2048');
-  });
-
-  // cgroups v2 rejects `--pids-limit 0` with EINVAL, killing the spawn.
-  it('omits the pids limit for 0, negatives, blank and garbage', () => {
-    for (const v of ['0', '-1', '', '   ', 'lots']) {
-      expect(hardeningArgs(v).join(' ')).not.toContain('--pids-limit');
+  it('ignores the pids limit argument entirely regardless of value', () => {
+    for (const v of ['2048', '0', '-1', '', '   ', 'lots']) {
+      expect(hardeningArgs(v)).toEqual(['--cap-drop=ALL', '--init']);
     }
-  });
-
-  it('floors fractional values', () => {
-    expect(hardeningArgs('2048.7').join(' ')).toContain('--pids-limit 2048');
   });
 });

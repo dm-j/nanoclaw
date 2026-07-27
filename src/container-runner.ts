@@ -432,23 +432,23 @@ export function resolveProviderName(
  * Container hardening flags. Applied to every agent container; no per-group or
  * per-install override.
  *
- * cap-drop and no-new-privileges are inert while containers run under the
- * `--user` mapping below (the capability sets are already empty and the image
- * carries no file capabilities) — they are depth against a root-in-container
- * path. `--init` is not optional: the `--entrypoint bash` override further down
- * defeats the image's tini, leaving bun as PID 1 with no signal handler, and
- * Linux discards default-action signals to PID 1. Without docker-init, SIGTERM
+ * NOTE: this is upstream's Docker-oriented hardening set, adapted for Apple
+ * Container (this fork's runtime — see .claude/skills/add-apple-container-runtime/).
+ * `container run --help` confirms `--cap-drop` and `--init` are supported;
+ * `--security-opt` and `--pids-limit` are NOT — passing either makes the
+ * spawn fail immediately with "Unknown option", which crash-loops every
+ * container (confirmed in production 2026-07-27). Both are dropped here.
+ *
+ * cap-drop is inert while containers run under the `--user` mapping below
+ * (the capability sets are already empty and the image carries no file
+ * capabilities) — it's depth against a root-in-container path. `--init` is
+ * not optional: the `--entrypoint bash` override further down defeats the
+ * image's tini, leaving bun as PID 1 with no signal handler, and Linux
+ * discards default-action signals to PID 1. Without an init process, SIGTERM
  * is ignored and every stop ends in SIGKILL after the full grace period.
  */
-export function hardeningArgs(pidsLimit: string): string[] {
-  const args = ['--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--init'];
-
-  // Test >0, not truthiness: cgroups v2 rejects `--pids-limit 0` with EINVAL and
-  // fails the spawn, and '0' is a truthy string. Blank/unparseable means no cap.
-  const pids = Number(pidsLimit);
-  if (Number.isFinite(pids) && pids > 0) args.push('--pids-limit', String(Math.floor(pids)));
-
-  return args;
+export function hardeningArgs(_pidsLimit: string): string[] {
+  return ['--cap-drop=ALL', '--init'];
 }
 
 function resolveProviderContribution(
