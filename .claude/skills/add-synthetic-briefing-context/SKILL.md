@@ -7,7 +7,7 @@ description: Add the synthetic-briefing-context mechanism — an opt-in per-agen
 
 Wires the skeleton-resume mechanism described in [docs/synthetic-context.md](../../../docs/synthetic-context.md) into `container/agent-runner/src/providers/claude.ts`, plus the host-side async briefing kickoff in `src/router.ts`. Toggled per agent group via `NANOCLAW_SYNTHETIC_CONTEXT` — off by default, zero cost for every other group.
 
-**Prerequisite — this is not installed by this skill.** The briefing content itself comes from a real Briefer call (`runBriefer` in `src/memory-briefing/briefer.ts`), which reads an Obsidian vault and depends on `memsearch`. If your fork doesn't have the memory-briefing/Briefer system yet, this skill has nothing to substitute into the skeleton's briefing slot and should not be applied. Verified in Phase 1.
+**Prerequisite — this is not installed by this skill.** The briefing content itself comes from a real Briefer call (`runBriefer` in `src/memory-briefing/briefer.ts`), which reads an Obsidian vault and depends on `memsearch`. Apply [`add-memory-briefing`](../add-memory-briefing/SKILL.md) first — it installs `briefer.ts`, the `recall`/`remember` MCP tools, `wikilink-cache.ts`, and the vault-side bootstrap doc this skill's briefing slot depends on. Without it, this skill has nothing to substitute into the skeleton's briefing slot and should not be applied. Verified in Phase 1.
 
 **Known smell, deliberately kept:** the container-side reach-in (Phase 2) touches `claude.ts` in three separate places — helper functions, mid-`query()` construction, and post-stream mirror-back — rather than a single colocated call. `claude.ts`'s `query()` method is too entangled (workarounds, hook wiring, event translation all interleaved) to push this behind one call without a larger refactor that's out of scope here. This is the same category of acknowledged exception `docs/skill-guidelines.md` calls out under "Worked examples" — kept pending an architectural fix, not held up as the pattern to imitate.
 
@@ -16,11 +16,12 @@ Wires the skeleton-resume mechanism described in [docs/synthetic-context.md](../
 ### Verify the memory-briefing prerequisite
 
 ```bash
-grep -q "export async function runBriefer" src/memory-briefing/briefer.ts && echo "OK: runBriefer present" || echo "MISSING — install memory-briefing first, this skill depends on it"
+grep -q "export async function runBriefer" src/memory-briefing/briefer.ts && echo "OK: runBriefer present" || echo "MISSING — apply add-memory-briefing first"
+test -f container/agent-runner/src/mcp-tools/briefing.ts && grep -q "export const remember" container/agent-runner/src/mcp-tools/briefing.ts && echo "OK: recall/remember tools present" || echo "MISSING — apply add-memory-briefing first"
 which memsearch >/dev/null 2>&1 && echo "OK: memsearch present" || echo "MISSING — memory-briefing's recall system needs this"
 ```
 
-If either is missing, stop and tell the user this skill assumes the memory-briefing/Briefer system is already installed.
+If any is missing, stop and tell the user to apply `add-memory-briefing` first.
 
 ### Check if already applied
 
@@ -33,16 +34,14 @@ grep -q "NANOCLAW_SYNTHETIC_CONTEXT" container/agent-runner/src/providers/claude
 
 ### Copy the new files
 
-The skill bundles the four new modules and the captured skeleton transcript in `assets/`. `cp` overwrites, so re-running is safe.
+The skill bundles the three modules specific to skeleton-substitution (not the memory-briefing prerequisite, which `add-memory-briefing` already installed) plus the captured skeleton transcript in `assets/`. `cp` overwrites, so re-running is safe.
 
 ```bash
 S=.claude/skills/add-synthetic-briefing-context/assets
 cp "$S/synthetic-context-skeleton.jsonl" container/agent-runner/src/providers/synthetic-context-skeleton.jsonl
-cp "$S/briefing.ts"                     container/agent-runner/src/mcp-tools/briefing.ts
 cp "$S/briefing-cache.ts"               src/modules/synthetic-context/briefing-cache.ts
 cp "$S/wikilink-endorsements.ts"        src/modules/synthetic-context/wikilink-endorsements.ts
 cp "$S/wikilink-endorsements.test.ts"   src/modules/synthetic-context/wikilink-endorsements.test.ts
-cp "$S/wikilink-cache.ts"               src/memory-briefing/wikilink-cache.ts
 ```
 
 If your fork's `claude.ts` or `router.ts` has diverged significantly from trunk, an alternative acquisition path (mirrors the channels/providers registry-branch pattern) is fetching from the dedicated `synthetic-briefing-context` branch instead of these bundled copies:
@@ -50,18 +49,10 @@ If your fork's `claude.ts` or `router.ts` has diverged significantly from trunk,
 ```bash
 git fetch origin synthetic-briefing-context
 git show origin/synthetic-briefing-context:container/agent-runner/src/providers/synthetic-context-skeleton.jsonl > container/agent-runner/src/providers/synthetic-context-skeleton.jsonl
-# ...same for the other four files above
+# ...same for the other two files above
 ```
 
 `synthetic-context-skeleton.jsonl` is a one-time-captured, permanently reusable transcript (real CLI-issued ids, not fabricated) — see docs/synthetic-context.md "The skeleton mechanism". Never regenerate or hand-edit it.
-
-### Register the MCP tool
-
-`container/agent-runner/src/mcp-tools/index.ts` self-registers tools via side-effecting imports. Add one line:
-
-```typescript
-import './briefing.js';
-```
 
 ### Wire the briefing kickoff into the router
 
@@ -165,7 +156,7 @@ See [REMOVE.md](REMOVE.md).
 
 ## Notes
 
-- **This is tool-only for the model-attention mechanism**, not a memory system in its own right — it consumes memory-briefing's Briefer output, it doesn't produce it.
+- **This is tool-only for the model-attention mechanism**, not a memory system in its own right — it consumes `add-memory-briefing`'s Briefer output, it doesn't produce it.
 - **One-turn-stale by design**, not a bug — see docs/synthetic-context.md "Path forward" for what synchronous delivery would cost.
 - **Per-group opt-in only.** Nothing changes for a group unless its container config sets the env var.
 
