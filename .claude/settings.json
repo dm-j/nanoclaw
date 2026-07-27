@@ -33,7 +33,6 @@
       "Bash(launchctl list *)",
       "Bash(memsearch stats|search|expand|config get|config list *)",
       "Bash(npm view *)",
-      "Bash(pnpm exec tsx scripts/mailman-triage.ts *)",
       "Bash(onecli agents|apps|secrets list *)",
       "Bash(ollama list|show|help|--version *)",
       "Bash(docker images *)",

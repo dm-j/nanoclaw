@@ -2,7 +2,7 @@
 
 A single-purpose HTTP endpoint that lets an external service push a plain-text message directly into Lumen's DM session — no channel adapter, no Chat SDK integration, just `POST` a body and it shows up as a chat message.
 
-Implementation: `src/webhook-lumen.ts`. Registered on the shared webhook HTTP server (`src/webhook-server.ts`, same server Telegram/Discord/mailman use) via `registerWebhookHandler()`, wired up in `src/index.ts`'s `main()`.
+Implementation: `src/webhook-lumen.ts`. Registered on the shared webhook HTTP server (`src/webhook-server.ts`, same server Telegram/Discord use) via `registerWebhookHandler()`, wired up in `src/index.ts`'s `main()`.
 
 ## Request
 

@@ -10,7 +10,7 @@ Every NanoClaw-specific configuration knob read from `process.env` (or `.env` vi
 | `AGENT_PROVIDER` | Provider override, read directly by test harness (`scripts/test-v2-agent.ts`) | none | (unset — using default) |
 | `NANOCLAW_AGENT_PROVIDER` | Setup-time: preselect the provider and skip the interactive picker | none (picker shown) | (unset — using default) |
 | `NANOCLAW_PICKED_PROVIDER` | Internal handoff — stashes the setup wizard's provider pick for later init scripts | none | (unset — using default) |
-| `ANTHROPIC_BASE_URL` | Custom Anthropic-compatible endpoint (e.g. PrefixRouter) injected into containers and MBIF/mailman subprocesses | SDK default (api.anthropic.com) | `http://host.docker.internal:8787` |
+| `ANTHROPIC_BASE_URL` | Custom Anthropic-compatible endpoint (e.g. PrefixRouter) injected into containers and MBIF subprocesses | SDK default (api.anthropic.com) | `http://host.docker.internal:8787` |
 | `NANOCLAW_ANTHROPIC_BASE_URL` | Setup-time override for the base URL written to `.env` during onboarding | none | (unset — using default) |
 | `NANOCLAW_ANTHROPIC_AUTH_TOKEN` | Setup-time custom auth token paired with `NANOCLAW_ANTHROPIC_BASE_URL` | none | (unset — using default) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token, threaded into MBIF/briefer/mbif-crew subprocess envs and read by setup's claude-assist flow | none | (unset — using default) |
@@ -69,12 +69,10 @@ Every NanoClaw-specific configuration knob read from `process.env` (or `.env` vi
 | `WEBHOOK_LUMEN_AGENT_GROUP_ID` | Agent group the webhook delivers messages into | none | `ag-1781738004490-2axf9a` |
 | `WEBHOOK_SHARED_SECRET` | Bearer secret required on inbound webhook POSTs | none | set (redacted) |
 
-## Mailman / Briefing (MBIF)
+## Briefing (MBIF)
 
 | Name | Purpose | Default | Current |
 |------|---------|---------|---------|
-| `MAILMAN_AGENT_GROUP_ID` | Agent group Mailman forks/notifications are delivered to | none (notify/fork skipped with a warning) | `ag-1781738004490-2axf9a` |
-| `MAILMAN_MODEL` | Model used for Mailman's cheap triage subagent | `claude-haiku-4-5` | (unset — using default) |
 | `ENRON_MAILDIR` | Corpus directory for the canary benchmark script, not a runtime var | `<cwd>/data/enron-corpus/maildir` | (unset — using default) |
 | `MBIF_VAULT_PATH` | Path to the Obsidian vault MBIF/briefer/mbif-crew operate on | none (briefing/vault features disabled without it) | `/Users/lumen/Projects/obsidian/lumen-data/lumen-data` |
 | `MBIF_LIVE_BRIEFER_MODEL` | Model override for the per-turn synthetic-context briefing pipeline (the one that actually runs live in production), [`briefing-cache.ts`](../src/modules/synthetic-context/briefing-cache.ts). Falls back to `MBIF_BRIEFER_MODEL`, then `ollama/kimi-k2.6:cloud` | `MBIF_BRIEFER_MODEL` → `ollama/kimi-k2.6:cloud` | (unset — using default: `MBIF_BRIEFER_MODEL` currently set, so live briefer runs `ollama/gpt-oss:20b-cloud`) |
