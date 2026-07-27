@@ -1,6 +1,6 @@
 # Skill guidelines
 
-The authoritative checklist for writing a NanoClaw skill: the bar that conformance tooling and registry review will hold every skill to. [customizing.md](customizing.md) is the short introduction; [skills-model.md](skills-model.md) explains why the model works this way. This document evolves with the system; when a rule here proves wrong, fix the rule.
+The authoritative checklist for writing a NanoClaw skill: the bar that conformance tooling and registry review will hold every skill to. [customizing.md](customizing.md) is the short introduction; [skills-model.md](skills-model.md) explains why the model works this way; [skill-phase-paradigm.md](skill-phase-paradigm.md) covers how apply steps are sequenced into phases. This document evolves with the system; when a rule here proves wrong, fix the rule.
 
 ---
 

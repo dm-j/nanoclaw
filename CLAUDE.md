@@ -307,6 +307,7 @@ This project uses pnpm with `minimumReleaseAge: 4320` (3 days) in `pnpm-workspac
 | [docs/customizing.md](docs/customizing.md) | Short intro to customizing via skills |
 | [docs/skills-model.md](docs/skills-model.md) | The skills model in full: recipes, tests, upgrades, migrations |
 | [docs/skill-guidelines.md](docs/skill-guidelines.md) | Authoritative checklist for writing a skill |
+| [docs/skill-phase-paradigm.md](docs/skill-phase-paradigm.md) | How `add-*` skills sequence apply steps into phases (Pre-flight → Apply → Wire → Build/Restart → Verify) |
 | [docs/skill-directives.md](docs/skill-directives.md) | `nc:` directive reference: fence grammar, the eight kinds, effects, guards, lint |
 | [docs/skill-engine-seam.md](docs/skill-engine-seam.md) | Skill-engine consumer contract (wizard / pipeline / agent-relay) + boundary-rule rationale |
 | [docs/templates.md](docs/templates.md) | Agent templates: what they are, stamping via `ncl groups create --template` + the setup wizard, the OneCLI/MCP-credential model, supported providers, and how to contribute one |
