@@ -63,10 +63,12 @@ crontab -l 2>/dev/null > /tmp/crontab.bak
 grep -q "assemble-transcript" /tmp/crontab.bak && echo "cron already wired — skip" || {
   cat /tmp/crontab.bak - <<EOF | crontab -
 55 1 * * * $V/Meta/scripts/assemble-transcript "\$(date +\%F)" "\$(date -v-1d +\%F)" >> $V/Meta/scripts/logs/assemble-transcript.log 2>&1
-0 */3 * * * $V/Meta/scripts/assemble-transcript "\$(date +\%F)" "\$(date -v-1d +\%F)" >> $V/Meta/scripts/logs/assemble-transcript.log 2>&1
+5 */3 * * * $V/Meta/scripts/assemble-transcript "\$(date +\%F)" "\$(date -v-1d +\%F)" >> $V/Meta/scripts/logs/assemble-transcript.log 2>&1
 EOF
 }
 ```
+
+**Not minute `0`.** The every-3h run is deliberately offset to `:05`, not `:00` — several recurring NanoClaw tasks fire on the hour too (e.g. a 3am "free period" task at `0 3 * * *`), and running assembly at the exact same minute races the task's own message landing in `add-message-export`'s `inbox/`. Confirmed in production 2026-07-27: assembly ran ~2 seconds before the message was written, silently producing a transcript missing that entry — Scribe (vault-side) then couldn't find it. A few minutes of buffer avoids the race entirely.
 
 macOS gates `crontab` edits behind a one-time Full Disk Access TCC prompt — the user will see it the first time this runs; approve it once.
 
