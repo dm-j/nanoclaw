@@ -17,6 +17,7 @@ import {
   CONTAINER_IMAGE_BASE,
   CONTAINER_INSTALL_LABEL,
   CONTAINER_MEMORY_LIMIT,
+  CONTAINER_PIDS_LIMIT,
   DATA_DIR,
   GROUPS_DIR,
 } from './config.js';
@@ -428,6 +429,29 @@ export function resolveProviderName(
   return (sessionProvider || containerConfigProvider || 'claude').toLowerCase();
 }
 
+/**
+ * Container hardening flags. Applied to every agent container; no per-group or
+ * per-install override.
+ *
+ * cap-drop and no-new-privileges are inert while containers run under the
+ * `--user` mapping below (the capability sets are already empty and the image
+ * carries no file capabilities) — they are depth against a root-in-container
+ * path. `--init` is not optional: the `--entrypoint bash` override further down
+ * defeats the image's tini, leaving bun as PID 1 with no signal handler, and
+ * Linux discards default-action signals to PID 1. Without docker-init, SIGTERM
+ * is ignored and every stop ends in SIGKILL after the full grace period.
+ */
+export function hardeningArgs(pidsLimit: string): string[] {
+  const args = ['--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--init'];
+
+  // Test >0, not truthiness: cgroups v2 rejects `--pids-limit 0` with EINVAL and
+  // fails the spawn, and '0' is a truthy string. Blank/unparseable means no cap.
+  const pids = Number(pidsLimit);
+  if (Number.isFinite(pids) && pids > 0) args.push('--pids-limit', String(Math.floor(pids)));
+
+  return args;
+}
+
 function resolveProviderContribution(
   session: Session,
   agentGroup: AgentGroup,
@@ -478,7 +502,7 @@ export function buildMounts(
   // Session folder at /workspace (contains inbound.db, outbound.db, outbox/, .claude/)
   mounts.push({ hostPath: sessDir, containerPath: '/workspace', readonly: false });
 
-  // Agent group folder at /workspace/agent (RW for working files + CLAUDE.local.md)
+  // Agent group folder at /workspace/agent (RW for working files + shared memory)
   mounts.push({ hostPath: groupDir, containerPath: '/workspace/agent', readonly: false });
 
   // container.json — nested RO mount on top of RW group dir so the agent
@@ -490,8 +514,8 @@ export function buildMounts(
 
   // Composer-managed CLAUDE.md artifacts — nested RO mounts. These are
   // regenerated from the shared base + fragments on every spawn; any
-  // agent-side writes would be clobbered, so enforce read-only. Only
-  // CLAUDE.local.md (per-group memory) remains RW via the group-dir mount.
+  // agent-side writes would be clobbered, so enforce read-only. The shared
+  // memory tree and standing-instructions source remain RW via the group mount.
   // `.claude-shared.md` is a symlink whose target (`/app/CLAUDE.md`) is
   // already RO-mounted, so writes through it fail regardless — no need for
   // a nested mount there.
@@ -647,12 +671,21 @@ async function buildContainerArgs(
   if (CONTAINER_CPU_LIMIT) args.push('--cpus', CONTAINER_CPU_LIMIT);
   if (CONTAINER_MEMORY_LIMIT) args.push('--memory', CONTAINER_MEMORY_LIMIT);
 
+  // Docker defaults /dev/shm to 64m, which silently short-writes past that size.
+  // agent-browser passes --disable-dev-shm-usage, but a third-party puppeteer or
+  // Playwright launcher may not.
+  args.push('--shm-size=1g');
+
+  args.push(...hardeningArgs(CONTAINER_PIDS_LIMIT));
+
   // Environment — only vars read by code we don't own.
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
-  // Per-group timezone override — the agent can update .timezone to handle travel.
+  // Per-group timezone: the agent's own .timezone file override (to handle
+  // travel) wins, then the DB-configured containerConfig.timezone
+  // (`ncl groups config update --timezone`), then the global default.
   // Shared with host-side scheduling (recurrence.ts) via resolveGroupTimezone
   // so a cron fired "3am" per this override doesn't fire 3am UTC instead.
-  args.push('-e', `TZ=${resolveGroupTimezone(agentGroup.folder)}`);
+  args.push('-e', `TZ=${resolveGroupTimezone(agentGroup.folder, containerConfig.timezone)}`);
 
   // Service token: lets the host services proxy identify this container even
   // when Docker Desktop NATs the connection to 127.0.0.1. Never logged.

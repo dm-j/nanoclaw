@@ -14,6 +14,7 @@
 import type Database from 'better-sqlite3';
 import { CronExpressionParser } from 'cron-parser';
 
+import { getContainerConfig } from '../../db/container-configs.js';
 import { log } from '../../log.js';
 import { TIMEZONE } from '../../config.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
@@ -52,14 +53,18 @@ function appendHostTaskNote(agentGroupId: string, seriesId: string, note: string
 export async function handleRecurrence(inDb: Database.Database, session: Session): Promise<void> {
   const recurring = getCompletedRecurring(inDb);
   // Same per-group .timezone override the container's own TZ env uses (see
-  // container-runner.ts) — falls back to the global config TIMEZONE via
-  // resolveGroupTimezone if there's no override, no group found, or the
-  // central DB lookup fails for any reason (never let a lookup failure here
-  // block recurrence processing).
+  // container-runner.ts), falling back to the DB-configured
+  // container_configs.timezone (a `groups config update --timezone` change
+  // must shift the series from the very next re-arm), then the global
+  // config TIMEZONE — resolved per call, not cached, and never let a lookup
+  // failure here block recurrence processing.
   let tz: string = TIMEZONE;
   try {
     const agentGroup = getAgentGroup(session.agent_group_id);
-    if (agentGroup) tz = resolveGroupTimezone(agentGroup.folder);
+    if (agentGroup) {
+      const dbTimezone = getContainerConfig(agentGroup.id)?.timezone;
+      tz = resolveGroupTimezone(agentGroup.folder, dbTimezone);
+    }
   } catch (err) {
     log.warn('Failed to resolve group timezone for recurrence, using global default', {
       agentGroupId: session.agent_group_id,

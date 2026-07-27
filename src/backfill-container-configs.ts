@@ -68,6 +68,7 @@ export function backfillContainerConfigs(): void {
       env: JSON.stringify(legacy.env ?? {}),
       cli_scope: 'group',
       context_window: null,
+      timezone: null,
       updated_at: new Date().toISOString(),
     };
 

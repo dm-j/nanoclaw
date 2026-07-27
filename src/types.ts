@@ -28,6 +28,7 @@ export interface ContainerConfigRow {
   cli_scope: string; // 'disabled' | 'group' | 'global'
   /** Active model's real context window, in tokens. Required before spawn — see container-runner.ts. */
   context_window: number | null;
+  timezone: string | null; // IANA id; NULL = follow the install-global timezone
   updated_at: string;
 }
 

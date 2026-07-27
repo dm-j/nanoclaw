@@ -28,7 +28,6 @@ import { fileURLToPath } from 'url';
 import { loadConfig } from './config.js';
 import { buildSystemPromptAddendum } from './destinations.js';
 import { getTaskSeriesId } from './db/session-routing.js';
-import { ensureMemoryScaffold } from './memory-scaffold.js';
 // Providers barrel — each enabled provider self-registers on import.
 // Provider skills append imports to providers/index.ts.
 import './providers/index.js';
@@ -58,12 +57,20 @@ async function main(): Promise<void> {
 
   log(`Starting v2 agent-runner (provider: ${providerName}, contextWindow: ${config.contextWindow})`);
 
+  // NOTE: upstream's provider-agnostic memory scaffold (ensureMemoryScaffold()
+  // + registerMemorySessionHook(MEMORY_SESSION_HOOK)) is deliberately NOT wired
+  // in here — it would add a SessionStart hook injecting /workspace/agent/memory/
+  // content into every session, duplicating this fork's own memsearch +
+  // working-memory.md system. See docs/memory-decision-upstream-declined.md.
+  // The AgentProvider interface still declares registerMemorySessionHook() for
+  // type compatibility with upstream-derived provider code; it's just never called.
+
   // Runtime-generated system-prompt addendum: agent identity (name) plus
   // the live destinations map. Everything else (capabilities, per-module
   // instructions, per-channel formatting) is loaded by Claude Code from
   // /workspace/agent/CLAUDE.md — the composed entry imports the shared
-  // base (/app/CLAUDE.md) and each enabled module's fragment. Per-group
-  // memory lives in /workspace/agent/CLAUDE.local.md (auto-loaded).
+  // base (/app/CLAUDE.md) and each enabled module's fragment. Memory is
+  // supplied separately by each provider's native lifecycle hook.
   const taskId = getTaskSeriesId();
   const instructions = buildSystemPromptAddendum(
     config.assistantName || undefined,
@@ -112,12 +119,6 @@ async function main(): Promise<void> {
     effort: config.effort,
     contextWindow: config.contextWindow,
   });
-
-  // Providers that lack native memory opt in via `usesMemoryScaffold`; for them
-  // the runner creates a persistent memory/ tree in its host-backed workspace at
-  // boot (idempotent). Default off — the trunk default (Claude) omits the flag
-  // and keeps its native memory untouched.
-  if (provider.usesMemoryScaffold) ensureMemoryScaffold();
 
   await runPollLoop({
     provider,

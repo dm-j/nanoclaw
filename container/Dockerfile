@@ -154,4 +154,12 @@ WORKDIR /workspace/group
 # `exec bun ...` (via setpriv to drop from root to node) so bun runs as
 # tini's direct child. Container starts as root so entrypoint.sh can
 # mount --bind files from the staging dir to their target paths before dropping.
+#
+# NOT adopted from upstream: setuid-root stripping (`find / -perm -4000 ...`)
+# + a Dockerfile-level `USER node` — both are incompatible with the Apple
+# Container flow above, which needs the container to start as root so
+# entrypoint.sh can stage-mount files before its own setpriv-based drop to
+# node. See .claude/skills/add-apple-container-runtime/ for the full
+# rationale. Worth revisiting whether an equivalent hardening step can run
+# from inside entrypoint.sh after the mount stage completes, before the drop.
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]

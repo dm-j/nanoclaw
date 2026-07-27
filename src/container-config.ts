@@ -11,9 +11,10 @@
 import fs from 'fs';
 import path from 'path';
 
-import { GROUPS_DIR } from './config.js';
+import { GROUPS_DIR, TIMEZONE } from './config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { getAgentGroup } from './db/agent-groups.js';
+import { isValidTimezone } from './timezone.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
 
 export interface McpServerConfig {
@@ -46,6 +47,22 @@ export interface ContainerConfig {
   env?: Record<string, string>;
   /** Active model's real context window, in tokens. Required — see container-runner.ts spawnContainer(). */
   contextWindow?: number;
+  timezone?: string;
+}
+
+/**
+ * DB-only effective timezone for an agent group: `container_configs.timezone`
+ * → install global. Used by callers with no filesystem access to the group's
+ * `.timezone` live-override file (e.g. `ncl tasks` CLI resources). Recurrence
+ * processing (`modules/scheduling/recurrence.ts`) uses the fuller resolution
+ * chain in `group-folder.ts`'s `resolveGroupTimezone` instead — file override
+ * first, this DB value as its fallback, then global — since it must agree
+ * with the container's own TZ env, which does have filesystem access.
+ * An invalid hand-edited DB value falls back to the global tz, same as no override.
+ */
+export function resolveGroupTimezone(agentGroupId: string): string {
+  const tz = getContainerConfig(agentGroupId)?.timezone;
+  return tz && isValidTimezone(tz) ? tz : TIMEZONE;
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -69,6 +86,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     effort: row.effort ?? undefined,
     env: Object.keys(env).length > 0 ? env : undefined,
     contextWindow: row.context_window ?? undefined,
+    timezone: row.timezone && isValidTimezone(row.timezone) ? row.timezone : undefined,
   };
 }
 

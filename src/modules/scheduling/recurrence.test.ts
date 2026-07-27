@@ -37,6 +37,14 @@ const { getAgentGroup } = await import('../../db/agent-groups.js');
 const { resolveGroupTimezone } = await import('../../group-folder.js');
 const { handleRecurrence, scriptBackoffMinutes } = await import('./recurrence.js');
 
+// resolveGroupTimezone reads the group's config row from the central DB
+// (not initialized here). Default: no override → falls back to the mocked
+// install TIMEZONE; individual tests set an override to test precedence.
+const containerConfigState = vi.hoisted(() => ({ timezone: null as string | null }));
+vi.mock('../../db/container-configs.js', () => ({
+  getContainerConfig: () => ({ timezone: containerConfigState.timezone }),
+}));
+
 const TEST_DIR = '/tmp/nanoclaw-recurrence-test';
 const DB_PATH = path.join(TEST_DIR, 'inbound.db');
 
@@ -64,10 +72,15 @@ beforeEach(() => {
   // Default wiring for tests that don't care about tz resolution specifics —
   // resolves to the global TIMEZONE mock (Asia/Tokyo) via a fixed group.
   vi.mocked(getAgentGroup).mockReturnValue({ id: 'ag-test', folder: 'g-test' } as ReturnType<typeof getAgentGroup>);
-  vi.mocked(resolveGroupTimezone).mockReturnValue('Asia/Tokyo');
+  // Mirrors the real function's precedence (file override, mocked away here,
+  // then the DB value passed as the second arg, then the global default) so
+  // tests that set `containerConfigState.timezone` actually exercise it,
+  // instead of a fixed return value masking the DB fallback entirely.
+  vi.mocked(resolveGroupTimezone).mockImplementation((_folder, dbTimezone) => dbTimezone ?? 'Asia/Tokyo');
 });
 
 afterEach(() => {
+  containerConfigState.timezone = null;
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
 });
 
@@ -125,6 +138,28 @@ describe('handleRecurrence', () => {
     expect(follow.process_after).toMatch(/T00:00:00/);
   });
 
+  it('re-arms in the group timezone override, not the install TIMEZONE', async () => {
+    // Install tz is pinned to Asia/Tokyo above; the group override must win.
+    // Asia/Kolkata is UTC+5:30 with no DST: 09:00 local === 03:30 UTC, exactly.
+    containerConfigState.timezone = 'Asia/Kolkata';
+    const db = freshDb();
+    insertTaskRow(db, {
+      id: 'task-group-tz',
+      seriesId: 'task-group-tz',
+      processAfter: '2020-01-01T00:00:00.000Z',
+      recurrence: '0 9 * * *',
+      content: JSON.stringify({ prompt: 'daily digest' }),
+    });
+    db.prepare(`UPDATE messages_in SET status='completed' WHERE id='task-group-tz'`).run();
+
+    await handleRecurrence(db, fakeSession());
+
+    const follow = db.prepare(`SELECT process_after FROM messages_in WHERE id != 'task-group-tz'`).get() as {
+      process_after: string;
+    };
+    expect(follow.process_after).toMatch(/T03:30:00/);
+  });
+
   it('does not clone rows whose recurrence is already cleared', async () => {
     const db = freshDb();
     insertTaskRow(db, {
@@ -163,7 +198,7 @@ describe('handleRecurrence', () => {
     await handleRecurrence(db, fakeSession());
 
     expect(getAgentGroup).toHaveBeenCalledWith('ag-test');
-    expect(resolveGroupTimezone).toHaveBeenCalledWith('lumen');
+    expect(resolveGroupTimezone).toHaveBeenCalledWith('lumen', null);
   });
 });
 
