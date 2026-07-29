@@ -513,7 +513,7 @@ async function deliverToAgent(
   // BEFORE writeSessionMessage (that's what actually wakes the container).
   if (event.message.kind === 'chat' || event.message.kind === 'chat-sdk') {
     const parsed = safeParseContent(event.message.content);
-    if (parsed.text) await maybeKickoffBriefing(session.agent_group_id, parsed.text);
+    if (parsed.text) await maybeKickoffBriefing(session.agent_group_id, session.id, parsed.text);
   }
 
   writeSessionMessage(session.agent_group_id, session.id, {

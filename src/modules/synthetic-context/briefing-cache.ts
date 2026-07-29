@@ -15,18 +15,79 @@ import path from 'path';
 
 import { getAgentGroup } from '../../db/agent-groups.js';
 import { getContainerConfig } from '../../db/container-configs.js';
-import { GROUPS_DIR } from '../../config.js';
+import { BRIEFING_LOG_DIR, GROUPS_DIR } from '../../config.js';
 import { readEnvFile } from '../../env.js';
 import { log } from '../../log.js';
+import type { LiteralTurn } from '../../memory-briefing/briefer.js';
 import { runBrieferWithWikilinkCache } from '../../memory-briefing/wikilink-cache.js';
+import { inboundDbPath, outboundDbPath } from '../../session-manager.js';
+import { openInboundDb, openOutboundDb } from '../../db/session-db.js';
+
+// How much history Briefer gets alongside the inciting message — kept small
+// deliberately. Briefer's own job is a fresh lookup against the vault, not
+// re-summarizing the conversation; too many turns just crowds out the vault
+// content it's supposed to be citing. Not the same knob as Lumen's own
+// NANOCLAW_SYNTHETIC_CONTEXT_LINES (container/agent-runner), which sizes a
+// different, unrelated context window.
+const BRIEFER_RECENT_TURNS = 6;
+
+/** Last N chat turns (both directions) for an agent group's session, oldest
+ * first — Briefer gets these for tone/continuity, not as source material. */
+function getRecentTurns(agentGroupId: string, sessionId: string, n: number): LiteralTurn[] {
+  type Row = { role: LiteralTurn['role']; text: string; timestamp: string };
+  const rows: Row[] = [];
+  try {
+    const inDb = openInboundDb(inboundDbPath(agentGroupId, sessionId));
+    for (const row of inDb
+      .prepare(
+        `SELECT content, timestamp FROM messages_in WHERE kind IN ('chat', 'chat-sdk') ORDER BY timestamp DESC LIMIT ?`,
+      )
+      .all(n) as { content: string; timestamp: string }[]) {
+      const text = safeParseText(row.content);
+      if (text) rows.push({ role: 'user', text, timestamp: row.timestamp });
+    }
+  } catch (err) {
+    log.debug('recent-turns inbound read failed (non-fatal)', { agentGroupId, sessionId, err });
+  }
+  try {
+    const outDb = openOutboundDb(outboundDbPath(agentGroupId, sessionId));
+    for (const row of outDb
+      .prepare(
+        `SELECT content, timestamp FROM messages_out WHERE kind IN ('chat', 'chat-sdk') ORDER BY timestamp DESC LIMIT ?`,
+      )
+      .all(n) as { content: string; timestamp: string }[]) {
+      const text = safeParseText(row.content);
+      if (text) rows.push({ role: 'assistant', text, timestamp: row.timestamp });
+    }
+  } catch (err) {
+    log.debug('recent-turns outbound read failed (non-fatal)', { agentGroupId, sessionId, err });
+  }
+  return rows
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    .slice(-n)
+    .map(({ role, text }) => ({ role, text }));
+}
+
+function safeParseText(raw: string): string | undefined {
+  try {
+    return (JSON.parse(raw) as { text?: string }).text;
+  } catch {
+    return raw;
+  }
+}
 
 const env = readEnvFile([
   'MBIF_VAULT_PATH',
   'MBIF_LIVE_BRIEFER_MODEL',
   'MBIF_BRIEFER_MODEL',
   'MBIF_LIVE_BRIEFER_BASE_URL',
+  'NANOCLAW_BRIEFING_DEBUG_LOG',
 ]);
 const VAULT_PATH = process.env.MBIF_VAULT_PATH || env.MBIF_VAULT_PATH;
+// Opt-in: also overwrite logs/briefings/last-debug.md with the same debug
+// content written per-group (see briefingDebugPath) — one rolling file
+// across all agent groups, easier to tail/grep than hunting per group folder.
+const BRIEFING_DEBUG_LOG_ENABLED = (process.env.NANOCLAW_BRIEFING_DEBUG_LOG ?? env.NANOCLAW_BRIEFING_DEBUG_LOG) === '1';
 
 // MBIF_LIVE_BRIEFER_MODEL > MBIF_BRIEFER_MODEL > sonnet (real Anthropic API,
 // same default as briefer.ts/the vault's briefer.md frontmatter). No baseUrl
@@ -58,6 +119,51 @@ function briefingCachePath(agentGroupId: string): string | null {
   const group = getAgentGroup(agentGroupId);
   if (!group) return null;
   return path.join(GROUPS_DIR, group.folder, '.briefing-cache.md');
+}
+
+// Debug-only inspection file, overwritten every run — not read by anything
+// (Lumen's context comes from .briefing-cache.md only). Only tool-call
+// metadata (name/detail/timing) is included, never subagent free text — same
+// isolation guarantee as the log line in runBriefingCall below.
+function briefingDebugPath(agentGroupId: string): string | null {
+  const group = getAgentGroup(agentGroupId);
+  if (!group) return null;
+  return path.join(GROUPS_DIR, group.folder, '.briefing-debug.md');
+}
+
+function formatDebugMarkdown(result: {
+  briefing: string;
+  costUsd: number;
+  durationMs: number;
+  toolCalls: { tool: string; detail: string; iterationMs: number; parentTask?: string }[];
+  prompt: string;
+}): string {
+  const bySubject = new Map<string, typeof result.toolCalls>();
+  for (const call of result.toolCalls) {
+    const key = call.parentTask ?? 'Top-level';
+    bySubject.set(key, [...(bySubject.get(key) ?? []), call]);
+  }
+
+  const lines: string[] = [
+    `# Briefing debug — ${new Date().toISOString()}`,
+    '',
+    `Model: ${LIVE_BRIEFER_MODEL}`,
+    `Total cost: $${result.costUsd.toFixed(4)}`,
+    `Total duration: ${result.durationMs}ms`,
+    `Tool calls: ${result.toolCalls.length}`,
+    '',
+  ];
+
+  for (const [subject, calls] of bySubject) {
+    const ms = calls.reduce((sum, c) => sum + c.iterationMs, 0);
+    lines.push(`## ${subject} — ${calls.length} call(s), ${ms}ms`, '');
+    for (const c of calls) lines.push(`- **${c.tool}** (${c.iterationMs}ms): ${c.detail}`);
+    lines.push('');
+  }
+
+  lines.push('---', '', '## Prompt sent', '', result.prompt);
+  lines.push('---', '', '## Final briefing', '', result.briefing);
+  return lines.join('\n');
 }
 
 // groups/<folder>/working-memory.md is a symlink to /workspace/vault/Meta/working-memory.md
@@ -104,11 +210,17 @@ interface FlightState {
 }
 const flightState = new Map<string, FlightState>();
 
-function runBriefingCall(agentGroupId: string, cachePath: string, messageText: string): Promise<void> {
+function runBriefingCall(
+  agentGroupId: string,
+  sessionId: string,
+  cachePath: string,
+  messageText: string,
+): Promise<void> {
   const previousBriefing = fs.existsSync(cachePath) ? fs.readFileSync(cachePath, 'utf-8') : undefined;
+  const recentTurns = getRecentTurns(agentGroupId, sessionId, BRIEFER_RECENT_TURNS);
   return runBrieferWithWikilinkCache(
     VAULT_PATH!,
-    [],
+    recentTurns,
     messageText,
     SYNTHETIC_BRIEFING_OVERRIDES,
     workingMemoryPath(),
@@ -116,14 +228,45 @@ function runBriefingCall(agentGroupId: string, cachePath: string, messageText: s
   )
     .then((result) => {
       fs.writeFileSync(cachePath, result.briefing);
-      log.debug('synthetic-context briefing cache updated', { agentGroupId, costUsd: result.costUsd });
+      const debugPath = briefingDebugPath(agentGroupId);
+      const debugMarkdown = debugPath || BRIEFING_DEBUG_LOG_ENABLED ? formatDebugMarkdown(result) : null;
+      if (debugPath && debugMarkdown) fs.writeFileSync(debugPath, debugMarkdown);
+      if (BRIEFING_DEBUG_LOG_ENABLED && debugMarkdown) {
+        fs.mkdirSync(BRIEFING_LOG_DIR, { recursive: true });
+        fs.writeFileSync(path.join(BRIEFING_LOG_DIR, 'last-debug.md'), debugMarkdown);
+      }
+      const toolMs = result.toolCalls.reduce((sum, c) => sum + c.iterationMs, 0);
+      // Per-subject breakdown: calls with no parentTask are the top-level
+      // briefer loop; calls tagged with a parentTask ran inside that Task's
+      // dispatched subagent (see parseStreamJson in briefer.ts). Only
+      // tool-call metadata (name/detail/timing) is logged here — never
+      // subagent free text — so this stays a host-log-only audit trail and
+      // never touches what Lumen's context is built from.
+      const bySubject = new Map<string, { count: number; ms: number }>();
+      for (const call of result.toolCalls) {
+        const key = call.parentTask ?? 'top-level';
+        const entry = bySubject.get(key) ?? { count: 0, ms: 0 };
+        entry.count += 1;
+        entry.ms += call.iterationMs;
+        bySubject.set(key, entry);
+      }
+      log.info('synthetic-context briefing cache updated', {
+        agentGroupId,
+        model: LIVE_BRIEFER_MODEL,
+        costUsd: result.costUsd,
+        durationMs: result.durationMs,
+        toolCallCount: result.toolCalls.length,
+        toolMs,
+        bySubject: Object.fromEntries(bySubject),
+        toolCalls: result.toolCalls,
+      });
     })
     .catch((err) => {
       log.warn('synthetic-context briefing kickoff failed (non-fatal, next turn falls back)', { agentGroupId, err });
     });
 }
 
-function pumpQueue(agentGroupId: string, cachePath: string): void {
+function pumpQueue(agentGroupId: string, sessionId: string, cachePath: string): void {
   const state = flightState.get(agentGroupId);
   if (!state) return;
   if (state.pendingTexts.length === 0) {
@@ -135,9 +278,9 @@ function pumpQueue(agentGroupId: string, cachePath: string): void {
   const resolveBatch = state.pendingResolve;
   state.pendingPromise = null;
   state.pendingResolve = null;
-  runBriefingCall(agentGroupId, cachePath, batched).then(() => {
+  runBriefingCall(agentGroupId, sessionId, cachePath, batched).then(() => {
     resolveBatch?.();
-    pumpQueue(agentGroupId, cachePath);
+    pumpQueue(agentGroupId, sessionId, cachePath);
   });
 }
 
@@ -151,7 +294,7 @@ function pumpQueue(agentGroupId: string, cachePath: string): void {
  * that's a run started just for it, or a batched run it got folded into
  * because another was already in flight against the same vault.
  */
-export function maybeKickoffBriefing(agentGroupId: string, messageText: string): Promise<void> {
+export function maybeKickoffBriefing(agentGroupId: string, sessionId: string, messageText: string): Promise<void> {
   if (!messageText.trim()) return Promise.resolve();
   if (!synthContextEnabledFor(agentGroupId)) return Promise.resolve();
   if (!VAULT_PATH) return Promise.resolve();
@@ -178,8 +321,8 @@ export function maybeKickoffBriefing(agentGroupId: string, messageText: string):
   }
 
   state.inFlight = true;
-  const promise = runBriefingCall(agentGroupId, cachePath, messageText).then(() => {
-    pumpQueue(agentGroupId, cachePath);
+  const promise = runBriefingCall(agentGroupId, sessionId, cachePath, messageText).then(() => {
+    pumpQueue(agentGroupId, sessionId, cachePath);
   });
   return syncModeEnabledFor(agentGroupId) ? promise : Promise.resolve();
 }

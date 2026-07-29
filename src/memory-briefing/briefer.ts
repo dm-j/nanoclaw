@@ -1,7 +1,5 @@
-import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { createInterface } from 'readline';
 
@@ -37,14 +35,12 @@ const BRIEFER_TIMEOUT_MS = 120_000;
 // Every briefing log to date shows Briefer reading these two files first,
 // every single time (see logs/briefings/*.md) — its own post-it and the
 // user profile. working-memory.md joins them as a third per-call addition
-// (see runBrieferWithWikilinkCache). Handing all three over via a fake
-// completed Read history (see buildBrieferSkeletonSession below) saves the
-// round trip far more reliably than dumping their content as plain prompt
-// text did — a plain-text injection competes with briefer.md's own explicit
-// "read user-profile.md first" instruction and gets re-read anyway roughly
-// as often as not (confirmed 2026-07-21). A fake Read tool_use/tool_result
-// pair in real session history is the same signal the model uses to decide
-// not to repeat any other tool call it can see it already made.
+// (see runBrieferWithWikilinkCache). Folded into the prompt as plain text
+// (see injectPromptFiles) — briefer.md's own "read user-profile.md first"
+// instruction sometimes re-reads a file already handed over this way
+// (confirmed 2026-07-21), but that's just an ordinary extra Read, not a
+// correctness problem. Simpler than the fake-resumed-session trick this
+// replaced, which broke outright (see injectPromptFiles's docstring).
 const ALWAYS_READ_VAULT_PATHS = ['Meta/states/briefer.md', 'Meta/user-profile.md'];
 
 interface InjectedFile {
@@ -105,183 +101,25 @@ function buildCachedWikilinkHint(vaultPath: string, rawWikilink: string): BashHi
   }
 }
 
-function claudeProjectsDir(): string {
-  const base = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude');
-  return path.join(base, 'projects');
-}
-
-/** Mirrors the CLI's own cwd -> project-dir mangling: every `/` becomes `-`. */
-function mangleCwd(cwd: string): string {
-  return cwd.replace(/\//g, '-');
-}
-
 /**
- * Builds a disposable session transcript — one throwaway id per call, never
- * appended to or reused — containing a fake, already-completed Read call for
- * each injected file, then resumes it via `--resume` instead of `-p`'s usual
- * cold start. Same trick container/agent-runner/src/providers/claude.ts uses
- * for Lumen's synthetic context, adapted for a real `Read` tool (Briefer has
- * no custom no-op MCP tools of its own to fake calls against) instead of the
- * stub `load_*` tools that back Lumen's version. If Briefer doesn't trust the
- * fake history and re-reads anyway, that's just an ordinary Read — no
- * correctness risk, just none of the savings this exists for.
+ * Folds the always-read files (briefer's own post-it, user-profile, and
+ * working-memory when given) and the cached-wikilink follow-up straight into
+ * the prompt text, instead of faking a resumed session with completed Read
+ * tool_use entries. That skeleton-resume trick (see git history) saved a
+ * round trip when it worked, but broke silently sometime after 2026-07-28
+ * 16:13 — `--resume` against the fabricated transcript started rejecting
+ * with a client-side ("model":"<synthetic>") "Credit balance is too low"
+ * error, never reaching the API at all. Only Lumen's own synthetic context
+ * (container/agent-runner/src/providers/claude.ts) actually needs session
+ * resume — it mirrors a real, growing transcript. Briefer fires cold every
+ * time anyway, so plain text is simpler and no less correct: if it re-reads
+ * a file it's already been handed, that's just an ordinary Read, no harm.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildBrieferSkeletonEntries(files: InjectedFile[], bashHint?: BashHint | null): any[] {
-  const now = () => new Date().toISOString();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const entries: any[] = [];
-  const promptId = randomUUID();
-  const common = { userType: 'external', entrypoint: 'sdk-cli', version: '2.1.212', gitBranch: 'HEAD' };
-
-  const kickoff =
-    `For this session only: read ${files.map((f) => f.vaultPath).join(', then ')}, once each, in that order` +
-    (bashHint ? `, then run \`${bashHint.command}\` once` : '') +
-    '. Do each step exactly once. After all steps complete, reply with just "done" and nothing else.';
-  let prevUuid: string | null = null;
-  const userUuid = randomUUID();
-  entries.push({
-    parentUuid: null,
-    isSidechain: false,
-    promptId,
-    type: 'user',
-    message: { role: 'user', content: kickoff },
-    uuid: userUuid,
-    timestamp: now(),
-    // Must match the --permission-mode flag passed to the real CLI invocation
-    // below (bypassPermissions) — this skeleton entry becomes part of the
-    // transcript that --resume loads, and a stale 'default' here silently
-    // overrides the CLI flag for every resumed run (which is nearly every
-    // run, since readAlwaysFiles() always injects at least two files).
-    // Confirmed 2026-07-21: every Write/Edit call was still being denied
-    // outright after 108f1e6e added the CLI flag, because this field was
-    // never updated to match.
-    permissionMode: 'bypassPermissions',
-    promptSource: 'sdk',
-    ...common,
-  });
-  prevUuid = userUuid;
-
-  for (const file of files) {
-    const callId = `call_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
-    const assistantUuid = randomUUID();
-    entries.push({
-      parentUuid: prevUuid,
-      isSidechain: false,
-      message: {
-        id: `msg_${randomUUID().replace(/-/g, '')}`,
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'tool_use', id: callId, name: 'Read', input: { file_path: file.absPath } }],
-        usage: { input_tokens: 0, output_tokens: 0 },
-      },
-      type: 'assistant',
-      uuid: assistantUuid,
-      timestamp: now(),
-      ...common,
-    });
-    const toolResultUuid = randomUUID();
-    entries.push({
-      parentUuid: assistantUuid,
-      isSidechain: false,
-      promptId,
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ tool_use_id: callId, type: 'tool_result', content: [{ type: 'text', text: file.content }] }],
-      },
-      uuid: toolResultUuid,
-      timestamp: now(),
-      toolUseResult: [{ type: 'text', text: file.content }],
-      sourceToolAssistantUUID: assistantUuid,
-      ...common,
-    });
-    prevUuid = toolResultUuid;
-  }
-
-  if (bashHint) {
-    const callId = `call_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
-    const assistantUuid = randomUUID();
-    entries.push({
-      parentUuid: prevUuid,
-      isSidechain: false,
-      message: {
-        id: `msg_${randomUUID().replace(/-/g, '')}`,
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'tool_use', id: callId, name: 'Bash', input: { command: bashHint.command } }],
-        usage: { input_tokens: 0, output_tokens: 0 },
-      },
-      type: 'assistant',
-      uuid: assistantUuid,
-      timestamp: now(),
-      ...common,
-    });
-    const toolResultUuid = randomUUID();
-    entries.push({
-      parentUuid: assistantUuid,
-      isSidechain: false,
-      promptId,
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ tool_use_id: callId, type: 'tool_result', content: [{ type: 'text', text: bashHint.output }] }],
-      },
-      uuid: toolResultUuid,
-      timestamp: now(),
-      toolUseResult: [{ type: 'text', text: bashHint.output }],
-      sourceToolAssistantUUID: assistantUuid,
-      ...common,
-    });
-    prevUuid = toolResultUuid;
-  }
-
-  entries.push({
-    parentUuid: prevUuid,
-    isSidechain: false,
-    message: {
-      id: `msg_${randomUUID().replace(/-/g, '')}`,
-      type: 'message',
-      role: 'assistant',
-      content: [{ type: 'text', text: 'done' }],
-      usage: { input_tokens: 0, output_tokens: 0 },
-      stop_reason: 'end_turn',
-    },
-    type: 'assistant',
-    uuid: randomUUID(),
-    timestamp: now(),
-    ...common,
-  });
-
-  return entries;
-}
-
-/** Writes the skeleton to the project dir the CLI checks on `--resume`, returning the session id to resume. */
-function buildBrieferSkeletonSession(
-  vaultPath: string,
-  files: InjectedFile[],
-  bashHint?: BashHint | null,
-): string | null {
-  if (files.length === 0 && !bashHint) return null;
-  const entries = buildBrieferSkeletonEntries(files, bashHint);
-  const ephemeralId = randomUUID();
-  for (const e of entries) {
-    e.cwd = vaultPath;
-    e.sessionId = ephemeralId;
-  }
-
-  const projectsDir = path.join(claudeProjectsDir(), mangleCwd(vaultPath));
-  try {
-    fs.mkdirSync(projectsDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(projectsDir, `${ephemeralId}.jsonl`),
-      entries.map((e) => JSON.stringify(e)).join('\n') + '\n',
-    );
-  } catch (err) {
-    log.warn('briefer skeleton session write failed (falling back to cold start)', { err });
-    return null;
-  }
-  return ephemeralId;
+function injectPromptFiles(prompt: string, files: InjectedFile[], bashHint?: BashHint | null): string {
+  if (files.length === 0 && !bashHint) return prompt;
+  const sections = files.map((f) => `### ${f.vaultPath}\n\n${f.content}`);
+  if (bashHint) sections.push(`### ${bashHint.command}\n\n${bashHint.output}`);
+  return ['## Reference files (already read for you — do not re-read)', '', ...sections, '', prompt].join('\n');
 }
 
 export interface LiteralTurn {
@@ -294,6 +132,9 @@ export interface ToolCallSummary {
   detail: string;
   /** Wall-clock time since the previous stream-json line arrived, ms. */
   iterationMs: number;
+  /** Set when this call happened inside a dispatched Task subagent, not the
+   * top-level briefer loop — the describing label of the Task call that spawned it. */
+  parentTask?: string;
 }
 
 export interface BrieferResult {
@@ -301,16 +142,16 @@ export interface BrieferResult {
   costUsd: number;
   durationMs: number;
   toolCalls: ToolCallSummary[];
+  /** The full -p prompt actually sent (after injectPromptFiles), for debug logging. */
+  prompt: string;
 }
 
 /**
  * Builds the -p prompt for the briefer agent: recent literal turns for tone,
  * then the new message clearly separated and last so it reads as the thing
  * to prepare a briefing for, not one more line of history. briefer.md,
- * user-profile.md, and working-memory.md are NOT injected here — they're
- * delivered via a fake completed Read history instead (see
- * buildBrieferSkeletonSession), which holds up more reliably than plain
- * prompt text competing with briefer.md's own "read this first" instructions.
+ * user-profile.md, and working-memory.md are NOT injected here — runBrieferOnce
+ * prepends them via injectPromptFiles instead, right before spawning.
  */
 export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: string, previousBriefing?: string): string {
   const history = recentTurns.length
@@ -325,7 +166,7 @@ export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: strin
     ...(previousBriefing
       ? ['## Your previous briefing (stale — update it, do not just repeat it)', '', previousBriefing, '']
       : []),
-    '## New message from David — prepare a briefing for this',
+    '## Inciting message — what you are preparing a briefing to answer',
     '',
     newMessage,
     '',
@@ -334,6 +175,15 @@ export function buildBrieferPrompt(recentTurns: LiteralTurn[], newMessage: strin
     'The briefing text is the whole response — do not append a `### Suggested next agent` or',
     '`### Post-it` section to it. Post-it is your own persistent state, written separately to',
     '`{{meta}}/states/briefer.md` per your instructions — it does not belong in the briefing output.',
+    'Your job is to surface vault material, not to restate or elaborate on the inciting message',
+    'above — every bullet must trace to something actually read from the vault. Pick one primary',
+    'subject, zero or one secondary subject, and zero or one additional subject from the material.',
+    'Dispatch a subagent for the primary and secondary subjects only. Primary subject: up to 6',
+    'bullets, preferably one sentence each. Secondary subject: up to 4 curt single-sentence bullets.',
+    'Additional subject: not dispatched — one bullet naming the topic with a single point-of-entry',
+    'citation. Every bullet in every subject is tagged with a confidence estimate (CERTAIN/',
+    'CONFIDENT/SPECULATIVE/DISPUTED/UNCLEAR/DOUBTFUL) and cited as a wikilink. If a subject has no',
+    'vault material, say so in its bullet instead of restating the inciting message.',
   ].join('\n');
 }
 
@@ -351,12 +201,11 @@ export interface BrieferOverrides {
  * cwd set to the Obsidian vault project, so it picks up the vault's own
  * `.claude/agents/briefer.md` definition and tools. Returns the briefing
  * markdown from the agent's `result` field. `workingMemory`, if given, joins
- * briefer.md/user-profile.md as a third fake pre-completed Read (see
- * buildBrieferSkeletonSession) — passed separately from the prompt since it's
- * per-call content, not a static vault file. `firstCachedWikilink`, if given
- * (the top-ranked link from a wikilink cache hit), becomes a fourth skeleton
- * step: a fake completed `obsidian-readonly read` on that link, nudging
- * Briefer to actually follow the cache hint rather than just note it.
+ * briefer.md/user-profile.md as a third file folded into the prompt (see
+ * injectPromptFiles) — passed separately since it's per-call content, not a
+ * static vault file. `firstCachedWikilink`, if given (the top-ranked link
+ * from a wikilink cache hit), becomes a fourth section: the actual content of
+ * that link, nudging Briefer to follow the cache hint rather than just note it.
  *
  * Retries once on a non-timeout failure, as cheap insurance against any
  * remaining transient failure (network blip, etc).
@@ -378,27 +227,35 @@ export async function runBriefer(
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function formatToolCall(name: string, input: any, iterationMs: number): ToolCallSummary {
+function formatToolCall(name: string, input: any, iterationMs: number, parentTask?: string): ToolCallSummary {
   switch (name) {
     case 'Read': {
       const chunked = input?.offset != null || input?.limit != null;
       const range = chunked ? ` (offset ${input.offset ?? 0}, limit ${input.limit ?? '?'})` : ' (full file)';
-      return { tool: name, detail: `${input?.file_path ?? '?'}${range}`, iterationMs };
+      return { tool: name, detail: `${input?.file_path ?? '?'}${range}`, iterationMs, parentTask };
     }
     case 'Grep':
       return {
         tool: name,
         detail: `${input?.path ?? '?'} — /${String(input?.pattern ?? '').slice(0, 60)}/`,
         iterationMs,
+        parentTask,
       };
     case 'Glob':
-      return { tool: name, detail: `${input?.pattern ?? '?'}`, iterationMs };
+      return { tool: name, detail: `${input?.pattern ?? '?'}`, iterationMs, parentTask };
     case 'Bash':
-      return { tool: name, detail: String(input?.command ?? '').slice(0, 100), iterationMs };
+      return { tool: name, detail: String(input?.command ?? '').slice(0, 100), iterationMs, parentTask };
     case 'Write':
-      return { tool: name, detail: `${input?.file_path ?? '?'}`, iterationMs };
+      return { tool: name, detail: `${input?.file_path ?? '?'}`, iterationMs, parentTask };
+    case 'Task':
+      return {
+        tool: name,
+        detail: String(input?.description ?? input?.prompt ?? '?').slice(0, 100),
+        iterationMs,
+        parentTask,
+      };
     default:
-      return { tool: name, detail: JSON.stringify(input ?? {}).slice(0, 100), iterationMs };
+      return { tool: name, detail: JSON.stringify(input ?? {}).slice(0, 100), iterationMs, parentTask };
   }
 }
 
@@ -410,6 +267,17 @@ function formatToolCall(name: string, input: any, iterationMs: number): ToolCall
  * `lines` carries the wall-clock time each line was received so each tool
  * call can be attributed the elapsed time since the prior line (i.e. how
  * long that iteration's model turn + previous tool result took).
+ *
+ * With `--forward-subagent-text` (see runBrieferOnce), a dispatched Task
+ * subagent's own assistant/user messages appear in this same stream, tagged
+ * with `parent_tool_use_id` pointing at the `Task` tool_use call that spawned
+ * them — this is how per-subject tool timing (added for the multi-subject
+ * briefing format) gets attributed instead of collapsing into one opaque
+ * `Task` entry. Only tool_use blocks are extracted, same as the top-level
+ * loop; subagent free-text commentary is deliberately never captured here —
+ * it exists only for host-side timing/audit, never reaches `result.briefing`
+ * (which is exclusively the top-level agent's own final `result` event) or
+ * any file Lumen's context is built from.
  */
 function parseStreamJson(lines: { line: string; at: number }[]): {
   result: Record<string, unknown> | null;
@@ -418,6 +286,10 @@ function parseStreamJson(lines: { line: string; at: number }[]): {
   const toolCalls: ToolCallSummary[] = [];
   let result: Record<string, unknown> | null = null;
   let prevAt: number | null = null;
+  // tool_use id of a top-level Task call -> its description, so nested
+  // subagent tool calls (tagged with matching parent_tool_use_id) can be
+  // attributed to the subject they were dispatched for.
+  const taskLabels = new Map<string, string>();
 
   for (const { line, at } of lines) {
     if (!line.trim()) continue;
@@ -427,15 +299,23 @@ function parseStreamJson(lines: { line: string; at: number }[]): {
     } catch {
       continue;
     }
+    const parentToolUseId = event.parent_tool_use_id as string | null | undefined;
     if (event.type === 'assistant') {
       const message = event.message as { content?: Array<Record<string, unknown>> } | undefined;
       for (const block of message?.content ?? []) {
         if (block.type === 'tool_use') {
           const iterationMs = prevAt !== null ? at - prevAt : 0;
-          toolCalls.push(formatToolCall(block.name as string, block.input, iterationMs));
+          const id = block.id as string | undefined;
+          const name = block.name as string;
+          const parentTask = parentToolUseId ? taskLabels.get(parentToolUseId) : undefined;
+          if (!parentToolUseId && name === 'Task' && id) {
+            const input = block.input as Record<string, unknown> | undefined;
+            taskLabels.set(id, String(input?.description ?? input?.prompt ?? id).slice(0, 60));
+          }
+          toolCalls.push(formatToolCall(name, block.input, iterationMs, parentTask));
         }
       }
-    } else if (event.type === 'result') {
+    } else if (event.type === 'result' && !parentToolUseId) {
       result = event;
     }
     prevAt = at;
@@ -455,7 +335,17 @@ function runBrieferOnce(
   }
 
   const model = overrides?.model || BRIEFER_MODEL;
-  const baseUrl = overrides?.baseUrl || ANTHROPIC_BASE_URL;
+  // When a caller passes an overrides object at all, its baseUrl is the whole
+  // answer — even undefined, meaning "no proxy" — not just a preference that
+  // falls through to the installation-wide default. Only a caller that passes
+  // no overrides object at all (the on-demand `recall` tool) gets the
+  // ANTHROPIC_BASE_URL/MBIF_BRIEFER_BASE_URL default. Confirmed 2026-07-29:
+  // the `||` version silently routed synthetic-context's plain sonnet calls
+  // through PrefixRouter (MBIF_BRIEFER_BASE_URL) despite briefing-cache.ts's
+  // own overrides object deliberately omitting baseUrl to avoid exactly that —
+  // and PrefixRouter's backing Anthropic account was out of credit, so every
+  // briefing failed with a misleading "Credit balance is too low".
+  const baseUrl = overrides ? overrides.baseUrl : ANTHROPIC_BASE_URL;
 
   const injectedFiles = readAlwaysFiles();
   if (workingMemory) {
@@ -466,7 +356,7 @@ function runBrieferOnce(
     });
   }
   const bashHint = firstCachedWikilink ? buildCachedWikilinkHint(VAULT_PATH, firstCachedWikilink) : null;
-  const skeletonSessionId = buildBrieferSkeletonSession(VAULT_PATH, injectedFiles, bashHint);
+  const fullPrompt = injectPromptFiles(prompt, injectedFiles, bashHint);
 
   const args = [
     '-p',
@@ -475,6 +365,14 @@ function runBrieferOnce(
     '--output-format',
     'stream-json',
     '--verbose',
+    // Surfaces a dispatched Task subagent's own tool_use/tool_result events in
+    // this same stream (tagged with parent_tool_use_id), instead of the
+    // subagent collapsing into one opaque Task entry — needed for per-subject
+    // timing now that briefer.md dispatches a subagent per briefing subject.
+    // Only tool_use blocks are read out of these (see parseStreamJson);
+    // subagent free-text is never captured, so it can't reach result.briefing
+    // or leak into Lumen's context. Requires CLI >= 2.1.211.
+    '--forward-subagent-text',
     // Headless -p has no TTY to prompt for approval, so without this every
     // Edit/Write call (e.g. Briefer updating its own Meta/states/briefer.md
     // post-it, or working-memory.md) was denied outright rather than
@@ -483,31 +381,15 @@ function runBrieferOnce(
     // still gates dispatcher/core-agent/skill/reference files regardless.
     '--permission-mode',
     'bypassPermissions',
-    ...(skeletonSessionId ? ['--resume', skeletonSessionId] : ['--no-session-persistence']),
+    '--no-session-persistence',
     ...(model ? ['--model', model] : []),
-    prompt,
+    fullPrompt,
   ];
 
   const spawnEnv = {
     ...process.env,
     ...(BRIEFER_OAUTH_TOKEN ? { CLAUDE_CODE_OAUTH_TOKEN: BRIEFER_OAUTH_TOKEN } : {}),
     ...(baseUrl ? { ANTHROPIC_BASE_URL: baseUrl } : {}),
-  };
-
-  // Disposable — built fresh per call and never resumed again, so nothing
-  // reads it after this process exits. Deleted in `close` below; Lumen's
-  // equivalent skeleton is left on disk (see claude.ts) because it's mirrored
-  // back onto a canonical transcript and fires once per user turn, but
-  // Briefer fires far more often (every message and every task wake), so
-  // leaving these around would accumulate unbounded.
-  const skeletonPath = skeletonSessionId
-    ? path.join(claudeProjectsDir(), mangleCwd(VAULT_PATH), `${skeletonSessionId}.jsonl`)
-    : null;
-  const cleanupSkeleton = (): void => {
-    if (!skeletonPath) return;
-    fs.unlink(skeletonPath, (err) => {
-      if (err) log.warn('briefer skeleton cleanup failed (non-fatal)', { err });
-    });
   };
 
   return new Promise<BrieferResult>((resolve, reject) => {
@@ -527,13 +409,11 @@ function runBrieferOnce(
 
     proc.on('error', (err) => {
       clearTimeout(timer);
-      cleanupSkeleton();
       reject(err);
     });
 
     proc.on('close', (code) => {
       clearTimeout(timer);
-      cleanupSkeleton();
       if (code !== 0) {
         const tail = lines
           .slice(-20)
@@ -553,6 +433,7 @@ function runBrieferOnce(
         costUsd: (result.total_cost_usd as number) ?? 0,
         durationMs: (result.duration_ms as number) ?? 0,
         toolCalls,
+        prompt: fullPrompt,
       });
     });
   });

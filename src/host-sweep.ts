@@ -233,7 +233,7 @@ async function sweepSession(session: Session): Promise<void> {
       // Same sync/async semantics as router.ts: must resolve before the wake
       // when NANOCLAW_SYNTHETIC_CONTEXT_SYNC is set for this group.
       for (const prompt of getDueTaskPrompts(inDb)) {
-        await maybeKickoffBriefing(agentGroup.id, prompt);
+        await maybeKickoffBriefing(agentGroup.id, session.id, prompt);
       }
       // wakeContainer never throws — transient spawn failures (OneCLI down,
       // etc.) return false and leave messages pending for the next tick.

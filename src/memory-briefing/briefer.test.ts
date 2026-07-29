@@ -10,7 +10,7 @@ describe('buildBrieferPrompt', () => {
     const newMsgIdx = prompt.indexOf('what should I know before replying?');
     expect(historyIdx).toBeGreaterThan(-1);
     expect(newMsgIdx).toBeGreaterThan(historyIdx);
-    expect(prompt).toContain('## New message from David');
+    expect(prompt).toContain('## Inciting message — what you are preparing a briefing to answer');
   });
 
   it('handles no recent turns', () => {
